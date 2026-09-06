@@ -25,7 +25,7 @@ variable "enable_github_oidc" {
 
 variable "github_repository" {
   type    = string
-  default = "my-enterprise-org/my-infra-repo"
+  default = "rodorico83/terraform"
 }
 
 # Fetch Network Layer state for Dev
