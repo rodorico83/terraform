@@ -41,19 +41,32 @@ data "terraform_remote_state" "network" {
 module "platform" {
   source = "../../../modules/platform"
 
+  providers = {
+    kubernetes.aws_eks = kubernetes
+  }
+
   environment              = var.environment
   aws_region               = var.aws_region
-  vpc_id                   = data.terraform_remote_state.network.outputs.vpc.id
-  private_subnet_ids       = data.terraform_remote_state.network.outputs.vpc.private_subnet_ids
-  database_subnet_group_id = data.terraform_remote_state.network.outputs.vpc.database_subnet_group_id
-  on_prem_cidr             = data.terraform_remote_state.network.outputs.vpc.on_prem_cidr
 
-  node_capacity_type  = var.node_capacity_type
-  node_instance_types = var.node_instance_types
-  scaling_config = {
+  vpc = {
+    vpc_id                    = data.terraform_remote_state.network.outputs.vpc.id
+    private_subnet_ids        = data.terraform_remote_state.network.outputs.vpc.private_subnet_ids
+    database_subnet_group_id  = data.terraform_remote_state.network.outputs.vpc.database_subnet_group_id
+    enable_vpn                = data.terraform_remote_state.network.outputs.vpc.enable_vpn
+  }
+
+  premises = {
+    on_prem_cidr    = data.terraform_remote_state.network.outputs.vpc.on_prem_cidr
+    on_prem_domain  = data.terraform_remote_state.network.outputs.vpc.on_prem_domain
+    on_prem_dns_ip  = data.terraform_remote_state.network.outputs.vpc.on_prem_dns_ip
+  }
+
+  eks = {
     desired_size = 1
     min_size     = 1
-    max_size     = 3
+    max_size     = 1
+    node_capacity_type       = var.node_capacity_type
+    node_instance_types      = var.node_instance_types
   }
 
   db_config = {
@@ -65,6 +78,5 @@ module "platform" {
     admin_username = "db_admin_dev"
   }
 
-  enable_github_oidc = var.enable_github_oidc
-  github_repository  = var.github_repository
+
 }

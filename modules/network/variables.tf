@@ -41,8 +41,13 @@ variable "on_prem_cidr" {
 
 variable "on_prem_public_ip" {
   type        = string
-  description = "Public IP address of the on-premises customer gateway"
-  default     = "203.0.113.1"
+  default     = null
+  description = "Public IP address of the on-premises customer gateway. Obligatorio cuando enable_vpn = true."
+}
+
+variable "on_prem_domain" {
+  type        = string
+  description = "Domain/Subdomain of the on-premises customer network"
 }
 
 variable "on_prem_dns_ip" {

@@ -8,7 +8,8 @@ output "db" {
   value       = module.platform.db
 }
 
-output "pod_app_sg_id" {
-  description = "Security Group ID para los Pods con ENI dedicada."
-  value       = module.platform.pod_app_sg_id
+
+output "storage" {
+  description = "Storage metadata expuesto al estado remoto."
+  value       = module.platform.storage
 }

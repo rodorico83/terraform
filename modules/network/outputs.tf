@@ -10,5 +10,8 @@ output "vpc" {
     database_subnet_group_id = module.vpc.database_subnet_group_name
     private_route_table_ids  = module.vpc.private_route_table_ids
     on_prem_cidr             = var.on_prem_cidr
+    on_prem_dns_ip           = var.on_prem_dns_ip
+    on_prem_domain           = var.on_prem_domain
+    enable_vpn               = var.enable_vpn
   }
 }

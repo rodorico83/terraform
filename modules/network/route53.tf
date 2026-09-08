@@ -1,5 +1,5 @@
 resource "aws_security_group" "route53_resolver_outbound" {
-  count       = var.enable_vpn ? 1 : 0
+  count = (var.enable_vpn && var.environment == "prod") ? 1 : 0
   name        = "route53-resolver-outbound-sg"
   description = "Allow outbound DNS forwarding to on-premises resolvers"
   vpc_id      = module.vpc.vpc_id
@@ -22,7 +22,7 @@ resource "aws_security_group" "route53_resolver_outbound" {
 }
 
 resource "aws_route53_resolver_endpoint" "outbound" {
-  count     = var.enable_vpn ? 1 : 0
+  count = (var.enable_vpn && var.environment == "prod") ? 1 : 0
   name      = "outbound-dns"
   direction = "OUTBOUND"
 
@@ -35,8 +35,8 @@ resource "aws_route53_resolver_endpoint" "outbound" {
 }
 
 resource "aws_route53_resolver_rule" "to_on_prem" {
-  count                = var.enable_vpn ? 1 : 0
-  domain_name          = "onprem.internal"
+  count = (var.enable_vpn && var.environment == "prod") ? 1 : 0
+  domain_name          = var.on_prem_domain
   name                 = "forward-to-onprem"
   rule_type            = "FORWARD"
   resolver_endpoint_id = aws_route53_resolver_endpoint.outbound[0].id
