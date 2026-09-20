@@ -1,4 +1,5 @@
-aws_region          = "eu-west-1"
+aws_region          = "eu-south-2"
 environment         = "dev"
-node_instance_types = ["t3.medium"]
-node_capacity_type  = "SPOT"
+node_instance_types = ["t3.small"]
+node_capacity_type  = "ON_DEMAND"
+

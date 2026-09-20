@@ -1,6 +1,5 @@
 variable "aws_region" {
   type    = string
-  default = "eu-west-1"
 }
 
 variable "environment" {
@@ -32,7 +31,7 @@ variable "github_repository" {
 data "terraform_remote_state" "network" {
   backend = "s3"
   config = {
-    bucket = "example-tfstate-storage-2026"
+    bucket = "example-tfstate-storage"
     key    = "dev/network/terraform.tfstate"
     region = var.aws_region
   }
@@ -41,9 +40,9 @@ data "terraform_remote_state" "network" {
 module "platform" {
   source = "../../../modules/platform"
 
-  providers = {
+  /*providers = {
     kubernetes.aws_eks = kubernetes
-  }
+  }*/
 
   environment              = var.environment
   aws_region               = var.aws_region
@@ -62,16 +61,17 @@ module "platform" {
   }
 
   eks = {
-    desired_size = 1
-    min_size     = 1
-    max_size     = 1
+    desired_size = 6
+    min_size     = 6
+    max_size     = 6
     node_capacity_type       = var.node_capacity_type
     node_instance_types      = var.node_instance_types
+    enable_pod_eni = false
   }
 
   db_config = {
     engine         = "postgres"
-    engine_version = "15.4"
+    engine_version = "18.6"
     instance_class = "db.t4g.micro"
     port           = 5432
     database_name  = "example_dev"
