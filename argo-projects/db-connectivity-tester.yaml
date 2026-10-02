@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: "db-connectivity-tester"
+  namespace: argocd
+spec:
+  description: "Frontera de seguridad para el equipo de desarrollo backend"
+
+  sourceRepos:
+    - "https://github.com/rodorico83/gitops-manifests.git"
+
+  destinations:
+    # 1. Namespace del Tenant (para Workloads, Quotas, Policies)
+    - namespace: "db-connectivity-tester"
+      server: "https://kubernetes.default.svc"
+
+  roles:
+    - name: developer
+      description: "Permisos de sincronización para desarrolladores backend"
+      policies:
+        - "p, role:developer, applications, get, {{ .Release.Namespace }}-app-project/*/*, allow"
+        - "p, role:developer, applications, sync, {{ .Release.Namespace }}-app-project/*/*, allow"
+        - "p, role:developer, applications, update, {{ .Release.Namespace }}-app-project/*/*, allow"

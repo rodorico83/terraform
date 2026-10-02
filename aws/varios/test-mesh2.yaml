@@ -1,0 +1,159 @@
+# Inyectado automáticamente por Argo CD en el despliegue del microservicio
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-mesh
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5" # 🎯 Se ejecuta antes que cualquier otra cosa
+  labels:
+    istio.io/dataplane-mode: ambient
+    istio.io/use-waypoint: waypoint
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: waypoint
+  namespace: test-mesh
+  annotations:
+    argocd.argoproj.io/sync-wave: "-4" # 🎯 Se levanta justo después del namespace
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+    - name: mesh
+      port: 15008
+      protocol: HBONE
+---
+# 2. CONFIGURACIÓN DEL FRONTEND (NGINX actuando como Servidor de App)
+# Configura a NGINX para que cuando reciba tráfico en "/", llame internamente al Backend.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-nginx-config
+  namespace: test-mesh
+data:
+  nginx.conf: |
+    events {}
+    http {
+        server {
+            listen 80;
+    
+            location / {
+                # 🎯 Redirige la petición internamente al DNS del Servicio B
+                proxy_pass http://servicio-b-backend.test-mesh.svc.cluster.local;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+            }
+        }
+    }
+
+---
+# 3. SERVICIO A (FRONTEND SERVER)
+apiVersion: v1
+kind: Service
+metadata:
+  name: servicio-a-frontend
+  namespace: test-mesh
+spec:
+  ports:
+    - name: http-frontend # 👈 Prefijo para que Istio y Kiali midan métricas HTTP
+      port: 80
+      targetPort: 80
+  selector:
+    app: frontend-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: servicio-a-frontend
+  namespace: test-mesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend-app
+  template:
+    metadata:
+      labels:
+        app: frontend-app
+    spec:
+      nodeSelector:
+        karpenter.sh/capacity-type: "spot"
+      containers:
+        - name: frontend-server
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+      volumes:
+        - name: config-volume
+          configMap:
+            name: frontend-nginx-config
+
+---
+# 4. SERVICIO B (BACKEND SERVER con retraso simulado)
+apiVersion: v1
+kind: Service
+metadata:
+  name: servicio-b-backend
+  namespace: test-mesh
+spec:
+  ports:
+    - name: http-backend # 👈 Prefijo obligatorio
+      port: 80
+      targetPort: 80
+  selector:
+    app: backend-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: servicio-b-backend
+  namespace: test-mesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend-app
+  template:
+    metadata:
+      labels:
+        app: backend-app
+    spec:
+      nodeSelector:
+        karpenter.sh/capacity-type: "spot"
+      containers:
+        - name: backend
+          image: ealen/echo-server:latest
+          ports:
+            - containerPort: 80
+          env:
+            - name: PORT
+              value: "80"
+
+---
+# 5. INGRESS PÚBLICO (Tu Ingress-NGINX de la frontera)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app-ingress
+  namespace: test-mesh
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/service-upstream: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: istio-test.aws.rj-engineering.com # URL para tus pruebas
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: servicio-a-frontend
+                port:
+                  number: 80

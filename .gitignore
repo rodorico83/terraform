@@ -1,6 +1,7 @@
 # Crear un .gitignore básico para Terraform y Windows
 .terraform/
 *.tfstate*
+*.hcl
 terraform.tfvars
 .idea/
 .vscode/
