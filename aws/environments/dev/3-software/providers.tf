@@ -101,6 +101,7 @@ provider "kubectl" {
   }
 }
 
+
 /*provider "wiz" {
   client_id     = var.wiz.client_id
   client_secret = var.wiz.client_secret

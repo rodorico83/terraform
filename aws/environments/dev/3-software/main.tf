@@ -76,6 +76,7 @@ variable "on_prem_cluster_endpoint" {
   default = null
 }
 
+
 /*variable "wiz" {
   type = object({
     enable         = bool
@@ -99,18 +100,18 @@ module "software" {
   enable_monitoring    = true
   enable_eck           = false
   enable_finops        = var.enable_finops
+  enable_redis           = true
 
   app_namespace = var.environment
 
-  providers = {
-    helm.onprem = helm.onprem
-  }
+  providers = { helm.onprem = helm.onprem }
 
   vpc = {
     vpc_id = data.terraform_remote_state.network.outputs.vpc.id
     private_subnet_ids = data.terraform_remote_state.network.outputs.vpc.private_subnet_ids
     database_subnet_group_id = data.terraform_remote_state.network.outputs.vpc.database_subnet_group_id
   }
+  nlb_scheme = "internet-facing"
 
   premises = {
     on_prem_cidr = data.terraform_remote_state.network.outputs.vpc.on_prem_cidr
@@ -136,6 +137,9 @@ module "software" {
     db_port                  = data.terraform_remote_state.platform.outputs.db.port
     sg_group_db_id           = data.terraform_remote_state.platform.outputs.db.sg_group
     database_subnet_group_id = data.terraform_remote_state.platform.outputs.db.subnet_group_id
+    name                     = data.terraform_remote_state.platform.outputs.db.name
+    endpoint                 = data.terraform_remote_state.platform.outputs.db.endpoint
+    username                 = data.terraform_remote_state.platform.outputs.db.username
   }
 
   github = {
@@ -144,7 +148,7 @@ module "software" {
     read_token = var.github_read_token
   }
 
-  nlb_scheme = "internet-facing"
+
 
   /*wiz = {
     enable         = var.wiz.enable
