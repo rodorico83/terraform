@@ -13,27 +13,6 @@ resource "helm_release" "nginx_ingress" {
   namespace        = "ingress-nginx"
   create_namespace = true
 
-  /*set {
-    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-type"
-    value = "external"
-  }
-  set {
-    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-nlb-target-type"
-    value = "instance"
-  }
-  set {
-    name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/aws-load-balancer-scheme"
-    value = var.nlb_scheme
-  }
-
-  # instance target type means a second hop through kube-proxy, which SNATs the
-  # source address. Local keeps the real client IP and makes the NLB health
-  # checks target only nodes actually running a controller pod.
-  set {
-    name  = "controller.service.externalTrafficPolicy"
-    value = "Local"
-  }*/
-
   values = [
     yamlencode({
 
@@ -41,7 +20,7 @@ resource "helm_release" "nginx_ingress" {
       namespace = {
         labels = {
           "istio.io/dataplane-mode" = "ambient"
-          "istio.io/use-waypoint" = "nginx-waypoint"
+          #"istio.io/use-waypoint" = "nginx-waypoint"
         }
       }
 
@@ -50,32 +29,24 @@ resource "helm_release" "nginx_ingress" {
         replicaCount = 1 # Mínimo 2 Pods para soportar actualizaciones sin cortes de red
 
         # 2. DESACTIVAR EL HPA DE INFRAESTRUCTURA DE SISTEMA 🛑
-        autoscaling = {
-          enabled = false
-        }
+        autoscaling = { enabled = false }
 
-        podAnnotations = {
-          # Habilita la redirección transparente del tráfico del controller de NGINX al ztunnel
-          "ambient.istio.io/redirection" = "enabled"
-        }
+        # Habilita la redirección transparente del tráfico del controller de NGINX al ztunnel
+        podAnnotations = { "ambient.istio.io/redirection" = "enabled" }
 
         # 3. LÍMITES DE RECURSOS ESTRICTOS CONTRA INSTANCIAS SPOT
         resources = {
           requests = {
-            cpu    = "200m"
-            memory = "256Mi"
+            cpu    = "100m"
+            memory = "128Mi"
           }
           limits = {
-            cpu    = "500m"
-            memory = "512Mi" # Evita fugas de memoria que ahoguen el nodo
+            cpu    = "200m"
+            memory = "256Mi" # Evita fugas de memoria que ahoguen el nodo
           }
         }
 
-        nodeSelector = { "eks.amazonaws.com/nodegroup" = "private-workers" }
-
-        # 4. DISPERSIÓN OBLIGATORIA (POD ANTI-AFFINITY)
-        # Le prohíbe a Kubernetes meter los dos Pods de Ingress en la misma máquina física.
-        # Si un nodo Spot de AWS muere, el otro Pod sigue vivo en otro nodo salvando el tráfico.
+        nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
         affinity = {
           podAntiAffinity = {
             requiredDuringSchedulingIgnoredDuringExecution = [
@@ -97,12 +68,16 @@ resource "helm_release" "nginx_ingress" {
 
         # 5. INTEGRACIÓN DE RED CON EL NLB DE AWS (Capa 1)
         service = {
+          # NLB target group, send traffic only to nodes with ngnix pods, keeps Client IP
+          # Cluster option send to all target group nodes of NLB, SNAT (Source Network Address Translation)
           externalTrafficPolicy =  "Local"
           annotations = {
-            # Le ordena al AWS Load Balancer Controller crear un NLB físico en tus subredes públicas
+            # Use external AWS load balancer
             "service.beta.kubernetes.io/aws-load-balancer-type"             = "external"
+            # NLB envía el tráfico al puerto de nodo (NodePort) instead of Pod port (VPC CNI pod ENI)
             "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type"  = "instance"
-            "service.beta.kubernetes.io/aws-load-balancer-scheme"           = var.nlb_scheme
+            # Place NLB in public subnet with public IP, other option internal for private subnet
+            "service.beta.kubernetes.io/aws-load-balancer-scheme"           = "internet-facing"
             #"controller.service.externalTrafficPolicy" =  "Local"
           }
         }
@@ -113,18 +88,16 @@ resource "helm_release" "nginx_ingress" {
           port = 10254 # Puerto por donde NGINX expondrá el endpoint /metrics
 
           # Si usas el Prometheus Operator, Helm puede crearte el PodMonitor/ServiceMonitor automáticamente:
+          # Cuando creando de cero comentar ya que prometeus stack depende de ingress-nginx y fallara por CRD no disponible
           serviceMonitor = {
             enabled = true
-            additionalLabels = {
-              release = "kube-prometheus-stack" # Cámbialo por la etiqueta de tu servidor Prometheus
-            }
+            additionalLabels = { release = "kube-prometheus-stack" }
           }
         }
       }
     })
   ]
-
-  depends_on = [helm_release.aws_lb_controller]
+  depends_on = [helm_release.aws_lb_controller,kubectl_manifest.karpenter_node_pool_infra]
 }
 
 # ─── EL RECURSO DE LECTURA ASOCIADO ───
@@ -134,13 +107,9 @@ resource "helm_release" "nginx_ingress" {
 data "kubernetes_service" "nginx_ingress" {
   #provider = kubernetes.aws_eks
   metadata {
-    # Cambia "ingress-nginx-controller" si el Service de tu Helm tiene otro nombre
     name      = "ingress-nginx-controller"
-
-    # Cambia "ingress-nginx" por el namespace real donde instalaste tu Ingress Controller
     namespace = "ingress-nginx"
   }
-
   depends_on = [helm_release.nginx_ingress]
 }
 

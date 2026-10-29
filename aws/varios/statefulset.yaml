@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: statefulset-headless
+  namespace: statefulset-headless
+  labels:
+    app: statefulset-headless
+spec:
+  clusterIP: None # 👈 Esto lo convierte en un Headless Service (necesario para StatefulSets)
+  selector:
+    app: db-tester
+  ports:
+    - port: 8080
+      name: web
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db-tester
+  namespace: mi-namespace
+spec:
+  serviceName: "db-tester-headless"
+  replicas: 3 # Arrancará con 3 pods (db-tester-0, db-tester-1, db-tester-2)
+  selector:
+    matchLabels:
+      app: db-tester
+  template:
+    metadata:
+      labels:
+        app: db-tester
+    spec:
+      containers:
+        - name: web-validator
+          image: python:3.11-alpine
+          command: ["/bin/sh", "-c", "echo 'Hola desde el pod' && sleep 3600"]
+          volumeMounts:
+            - name: pvc-data # Debe coincidir con el nombre de la plantilla de abajo
+              mountPath: /mnt/persistent-data
+
+    # 🎯 POLÍTICA DE RETENCIÓN DE PVCs
+  persistentVolumeClaimRetentionPolicy:
+    whenScaled: Delete    # Si escalas hacia abajo (ej. de 3 a 1), los PVCs sobrantes se BORRAN automáticamente.
+    whenDeleted: Retain   # Si borras el StatefulSet entero por completo, por seguridad se RETAINEN (puedes cambiarlo a Delete si quieres borrado total).
+
+  # 🎯 LA MAGIA DEL STATEFULSET PARA EL ALMACENAMIENTO
+  volumeClaimTemplates:
+    - metadata:
+        name: pvc-data # Nombre base del volumen
+      spec:
+        accessModes: [ "ReadWriteOnce" ] # RWO (un disco independiente por cada pod)
+        resources:
+          requests:
+            storage: 5Gi # Tamaño del disco EBS que se creará automáticamente para cada uno

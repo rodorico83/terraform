@@ -96,9 +96,9 @@ module "karpenter_controller_role" {
   }
 }
 
+# Allow the request of SPOT nodes
 resource "aws_iam_service_linked_role" "spot" {
   aws_service_name = "spot.amazonaws.com"
-
   # Este bloque evita que falle si el rol ya existía previamente en tu cuenta de AWS
   lifecycle {
     ignore_changes = all
@@ -114,6 +114,8 @@ resource "helm_release" "karpenter_crd" {
   chart            = "karpenter-crd"
   version          = "1.0.6" # 👈 Use the matching version for your stack
   create_namespace = false
+  wait   = true
+  atomic = true
 }
 
 # 4. Install Karpenter Core Controller
@@ -126,40 +128,65 @@ resource "helm_release" "karpenter" {
   create_namespace = false
 
   values = [
-    <<-EOT
-    serviceAccount:
-      create: true
-      name: karpenter
-      annotations:
-        # Associates the IAM Role with the Service Account
-        eks.amazonaws.com/role-arn: ${module.karpenter_controller_role.iam_role_arn}
+    yamlencode({
+      replicaCount = 1
+      #podDisruptionBudget = { maxUnavailable = 1 }
 
-    # ------------------------------------------------------------------------
-    # FORZAR A KARPENTER A CORRER EXCLUSIVAMENTE EN EL MANAGED NODE GROUP BASE
-    # ------------------------------------------------------------------------
-    nodeSelector:
-      # "private-workers" es el node_group_name declarado en eks.tf
-      eks.amazonaws.com/nodegroup: "private-workers"
+      # 🎯 Notificación de eventos EC2/Spot mediante SQS (recomendado to detect shutdown by maintenance)
+      # interruptionQueue = var.karpenter_sqs_queue_name
 
-    settings:
-      clusterName: ${var.eks.cluster_name}
-      clusterEndpoint: ${var.eks.cluster_endpoint}
-      # Not required with karpenter version 1.0.0+
-      #interconnect:
-      #  aws:
-      #    # Tells Karpenter which EKS NodeGroup IAM role to give to newly created instances
-      #    defaultInstanceProfile: ${var.eks.cluster_name}-node-profile
+      priorityClassName = "system-cluster-critical"
 
-    # Tolerations force Karpenter pods onto your locked-down system node group
-    tolerations:
-      - key: "CriticalAddonsOnly"
-        operator: "Exists"
-      - key: "nas-system-nodes"
-        operator: "Exists"
-        effect: "NoSchedule"
-    EOT
+      /*topologySpreadConstraints = [
+        {
+          maxSkew           = 1
+          topologyKey       = "topology.kubernetes.io/zone"
+          whenUnsatisfiable = "ScheduleAnyway"
+          labelSelector = {
+            matchLabels = { "app.kubernetes.io/name" = "karpenter" }
+          }
+        }
+      ]*/
+      serviceAccount = {
+        create = true
+        name   = "karpenter"
+        annotations = { "eks.amazonaws.com/role-arn" = module.karpenter_controller_role.iam_role_arn }
+      }
+      nodeSelector = { "eks.amazonaws.com/nodegroup" = "private-workers" }
+      controller = {
+        resources = {
+          requests = {
+            cpu    = "75m"
+            memory = "400Mi"
+          }
+          limits = {
+            cpu    = "300m"
+            memory = "700Mi"
+          }
+        }
+      }
+
+      settings = {
+        clusterName     = var.eks.cluster_name
+        clusterEndpoint = var.eks.cluster_endpoint
+        # Allow karpenter to replace Spot node for a cheaper Spot node type if available nd suitable
+        featureGates = { spotToSpotConsolidation = true }
+      }
+
+      # Tolerations force Karpenter pods onto your locked-down system node group
+      tolerations = [
+        {
+          key      = "CriticalAddonsOnly"
+          operator = "Exists"
+        },
+        {
+          key      = "nas-system-nodes"
+          operator = "Exists"
+          effect   = "NoSchedule"
+        }
+      ]
+    })
   ]
-
   # Ensures CRDs exist before running the controller
   depends_on = [helm_release.karpenter_crd]
 }
@@ -170,18 +197,17 @@ resource "kubectl_manifest" "karpenter_node_class" {
   yaml_body = yamlencode({
     apiVersion = "karpenter.k8s.aws/v1"
     kind       = "EC2NodeClass"
-    metadata = {
-      name = "default-v2"
-    }
+    metadata = { name = "default-v3" }
     spec = {
       # 🔍 Busca automáticamente tus subnets y Security Groups usando el nombre del clúster
       subnetSelectorTerms = [
-        { tags = { "kubernetes.io/cluster/${var.eks.cluster_name}" = "shared" } }
+        { tags = { "karpenter.sh/discovery" = var.eks.cluster_name } }
       ]
+
+      # SG Selection via tag or via Id
       /*securityGroupSelectorTerms = [
         { tags = { "kubernetes.io/cluster/${var.eks.cluster_name}" = "owned" } }
       ]*/
-
       securityGroupSelectorTerms = [
         { id = var.eks.node_sg },   # Tu SG personalizado de nodos
         { id = var.eks.cluster_sg } # SG por defecto de EKS
@@ -194,9 +220,29 @@ resource "kubectl_manifest" "karpenter_node_class" {
 
       # Sistema operativo optimizado para EKS (Soporta x86 y ARM de forma nativa), Not valid for Karpenter version > 1
       amiSelectorTerms = [
-        { alias = "al2023@latest" } # 👈 Esto le indica a AWS que busque la versión más nueva de Amazon Linux 2023 sin amarrarse a la v1.36 específica que fallaba
+        { alias = "al2023@latest" } # Other option bottlerocket@latest (ssoo ultraligero diseñado por AWS exclusivamente para correr contenedores)
       ]
-
+      kubelet = {
+        maxPods = 110
+        systemReserved = {
+          cpu    = "50m"
+          memory = "128Mi"
+        }
+      }
+      # root system disk configuration
+      blockDeviceMappings = [
+        {
+          deviceName = "/dev/xvda"
+          ebs = { # These are actually the default values except for volume size which is usuarlly 20GB
+            volumeSize          = "20Gi"
+            volumeType          = "gp3"
+            iops                = 3000
+            throughput          = 125
+            encrypted           = true
+            deleteOnTermination = true
+          }
+        }
+      ]
 
       metadataOptions = {
         httpEndpoint = "enabled"
@@ -207,36 +253,17 @@ resource "kubectl_manifest" "karpenter_node_class" {
 
     }
   })
-
   depends_on = [helm_release.karpenter]
 }
 
-# ==============================================================================
-# PRIORITY CLASSES PARA GESTIÓN DE PREEMPTION Y DAEMONSETS CON KARPENTER
-# ==============================================================================
-
-# Prioridad Alta para DaemonSets (Fuerza el desalojo de pods de negocio)
-/*resource "kubectl_manifest" "priority_class_daemonsets" {
-  yaml_body = yamlencode({
-    apiVersion    = "scheduling.k8s.io/v1"
-    kind          = "PriorityClass"
-    metadata = {
-      name = "daemonset-high-priority"
-    }
-    value         = 900000
-    globalDefault = false
-    description   = "Prioridad alta para forzar desalojo de pods de negocio cuando un DaemonSet entra en el nodo."
-  })
-}*/
 
 # Prioridad Por Defecto para Cargas de Trabajo / Negocio
+# system-node-critical and system-cluster-critical are avilable by default
 resource "kubectl_manifest" "priority_class_workloads" {
   yaml_body = yamlencode({
     apiVersion    = "scheduling.k8s.io/v1"
     kind          = "PriorityClass"
-    metadata = {
-      name = "workload-medium-priority"
-    }
+    metadata = { name = "workload-medium-priority" }
     value         = 100000
     globalDefault = true # Todos los pods sin priorityClassName explícito tomarán este valor
     description   = "Prioridad base por defecto para Deployments de aplicaciones de negocio."
@@ -244,27 +271,17 @@ resource "kubectl_manifest" "priority_class_workloads" {
 }
 
 
-# 6. Definición del NodePool con la estrategia de bajo coste condicional
+# Definición del NodePool con la estrategia de bajo coste condicional
 resource "kubectl_manifest" "karpenter_node_pool" {
   #provider = kubernetes.aws_eks
 
   yaml_body = yamlencode({
     apiVersion = "karpenter.sh/v1"
     kind       = "NodePool"
-    metadata = {
-      name = "low-cost-pool"
-    }
+    metadata = { name = "low-cost-pool" }
     spec = {
       template = {
         spec = {
-          # Max number of pods per node and reserve for system pods (daemonsets)
-          kubelet = {
-            maxPods = 110 # Si usas Prefix Delegation
-            systemReserved = {
-              cpu    = "150m"
-              memory = "256Mi"
-            }
-          }
           requirements = [
             # 💡 AUTOMATIZACIÓN DE COSTES:
             # Permitir todas las zonas de la región (ej. eu-south-2)
@@ -290,6 +307,9 @@ resource "kubectl_manifest" "karpenter_node_pool" {
             {
               key      = "node.kubernetes.io/instance-type"
               operator = "In"
+              # medium 2 CPU 4GB RAM, Red 5 Gbps, Baseline 2,000 IOPS, 11,800 IOPS
+              # large  2 CPU 8GB RAM, Red 5 Gbps, Baseline 4,000 IOPS, 15,700 IOPS
+              # xlarge 4 CPU 16GB RAM, Red 5 Gbps,  8000/23000 IPS
               values   = [ "t3.large", "t3.medium", "t4g.medium" , "t4g.large" ]
               #values   = ["t4g.medium", "t4g.large", "t3a.medium", "t3a.large", "c6g.large", "m6a.large"]
             }
@@ -298,25 +318,33 @@ resource "kubectl_manifest" "karpenter_node_pool" {
           nodeClassRef = {
             group = "karpenter.k8s.aws"
             kind  = "EC2NodeClass"
-            name  = "default-v2"
+            name  = "default-v3"
           }
         }
       }
       # Límites de seguridad para evitar que el autoescalado crezca infinitamente por error
       limits = {
-        cpu    = "20"
-        memory = "32Gi"
+        cpu    = "8"
+        memory = "24Gi"
       }
       disruption = {
         # Consolida nodos vacíos o infrautilizados de forma combinada
         consolidationPolicy = "WhenEmptyOrUnderutilized"
-
-        # OBLIGATORIO V1: Tiempo de espera para ejecutar la fusión (ej: 1 minuto)
-        # En desarrollo "1m" es ideal para ver la magia de ahorro rápido en acción
-        consolidateAfter = "10m"
-
+        # Tiempo de espera para ejecutar la fusión (ej: 1 minuto)
+        consolidateAfter = "1m"
         # Caducidad obligatoria del nodo para parches de seguridad (30 días)
         expireAfter = "720h"
+
+        /*budgets = [
+          # PROHIBIR desaprovisionamientos/consolidaciones las 8 siguientes horas a las 9:00 AM
+          {
+            schedule = "0 9 * * mon-fri"
+            duration = "8h"
+            nodes    = "0"
+          },
+          # Permitir consolidaciones de máximo el 10% de los nodos simultáneamente
+          { nodes    = "10%" }
+        ]*/
       }
     }
   })
@@ -324,14 +352,96 @@ resource "kubectl_manifest" "karpenter_node_pool" {
   depends_on = [kubectl_manifest.priority_class_workloads ]
 }
 
+
+resource "kubectl_manifest" "karpenter_node_pool_infra" {
+  #provider = kubernetes.aws_eks
+
+  yaml_body = yamlencode({
+    apiVersion = "karpenter.sh/v1"
+    kind       = "NodePool"
+    metadata = { name = "low-cost-pool-infra" }
+    spec = {
+      template = {
+        spec = {
+          metadata = {
+            labels = { "workload-type" = "infrastructure" }
+            # Anotación para proteger los nodos frente a la disrupción/consolidación de Karpenter
+            annotations = { "karpenter.sh/do-not-disrupt" = "true" }
+          }
+          requirements = [
+            # 💡 AUTOMATIZACIÓN DE COSTES:
+            # Permitir todas las zonas de la región (ej. eu-south-2)
+            {
+              key      = "topology.kubernetes.io/zone"
+              operator = "In"
+              values   = ["eu-south-2a", "eu-south-2b"]
+            },
+            # Si var.environment es "prod", usa "on-demand". Si es "dev"/"stage", usa "spot" (70% ahorro).
+            {
+              key      = "karpenter.sh/capacity-type"
+              operator = "In"
+              values   = [var.environment == "prod" ? "on-demand" : "spot"]
+              #values   = ["spot" , "on-demand"]
+            },
+            # Permite tanto nodos tradicionales (amd64) como los económicos Graviton (arm64)
+            {
+              key      = "kubernetes.io/arch"
+              operator = "In"
+              values   = ["amd64", "arm64"]
+            },
+            # Restringimos el parque de servidores a las familias más baratas y eficientes de AWS
+            {
+              key      = "node.kubernetes.io/instance-type"
+              operator = "In"
+              #values   = [ "t3.large", "t3.medium", "t4g.medium" , "t4g.large" ]
+              values   = ["t3.medium","t4g.medium","t4g.large","t3.large","t4g.xlarge","t3.xlarge"]
+            }
+          ]
+          # Vinculación con la clase de AWS definida arriba
+          nodeClassRef = {
+            group = "karpenter.k8s.aws"
+            kind  = "EC2NodeClass"
+            name  = "default-v3"
+          }
+        }
+      }
+      # Límites de seguridad para evitar que el autoescalado crezca infinitamente por error
+      limits = {
+        cpu    = "18"
+        memory = "48Gi"
+      }
+      disruption = {
+        # Consolida nodos vacíos o infrautilizados de forma combinada
+        consolidationPolicy = "WhenEmptyOrUnderutilized"
+        # Tiempo de espera para ejecutar la fusión (ej: 1 minuto)
+        consolidateAfter = "1m"
+        # Caducidad obligatoria del nodo para parches de seguridad (30 días)
+        expireAfter = "720h"
+
+        budgets = [
+          # PROHIBIR desaprovisionamientos/consolidaciones las 8 siguientes horas a las 9:00 AM
+          {
+            schedule = "0 9 * * mon-fri"
+            duration = "8h"
+            nodes    = "0"
+          },
+          # Permitir consolidaciones de máximo el 10% de los nodos simultáneamente
+          { nodes    = "10%" }
+        ]
+      }
+    }
+  })
+
+  depends_on = [kubectl_manifest.priority_class_workloads ]
+}
+
+
 # 6. 🏷️ Inyectamos dinámicamente el tag de Karpenter en las Subnets de la Capa 1
 resource "aws_ec2_tag" "karpenter_subnet_tags" {
-  # Recorre cada una de las subnets privadas de tu lista
   for_each    = toset(var.vpc.private_subnet_ids)
   resource_id = each.value
-
-  key   = "kubernetes.io/cluster/${var.eks.cluster_name}"
-  value = "shared"
+  key   = "karpenter.sh/discovery"
+  value = var.eks.cluster_name
 }
 
 /*

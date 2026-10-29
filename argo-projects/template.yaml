@@ -1,0 +1,32 @@
+# Inyectado automáticamente por Argo CD en el despliegue del microservicio
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: "${namespace}"
+  labels:
+    istio.io/dataplane-mode: ambient
+    #istio.io/use-waypoint: ${namespace}-waypoint
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: "${namespace}"
+  namespace: argocd
+spec:
+  description: "Frontera de seguridad para el equipo de desarrollo backend"
+
+  sourceRepos:
+    - "https://github.com/rodorico83/gitops-manifests.git"
+
+  destinations:
+    # 1. Namespace del Tenant (para Workloads, Quotas, Policies)
+    - namespace: "${namespace}"
+      server: "https://kubernetes.default.svc"
+
+  roles:
+    - name: developer
+      description: "Permisos de sincronización para desarrolladores backend"
+      policies:
+        - "p, role:developer, applications, get, ${namespace}-app-project/*/*, allow"
+        - "p, role:developer, applications, sync, ${namespace}-app-project/*/*, allow"
+        - "p, role:developer, applications, update, ${namespace}-app-project/*/*, allow"

@@ -1,3 +1,9 @@
+# Inyectado automáticamente por Argo CD en el despliegue del microservicio
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: "db-connectivity-tester"
+---
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -12,6 +18,7 @@ spec:
   destinations:
     # 1. Namespace del Tenant (para Workloads, Quotas, Policies)
     - namespace: "db-connectivity-tester"
+      #server: "https://CDBCB9A2691315EBE7D494CD6CED0C35.yl4.eu-south-2.eks.amazonaws.com"
       server: "https://kubernetes.default.svc"
 
   roles:

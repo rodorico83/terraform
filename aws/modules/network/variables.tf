@@ -1,3 +1,8 @@
+variable "aws_region" {
+  type    = string
+  default = "eu-south-2"
+}
+
 variable "environment" {
   type        = string
   description = "Environment name (e.g. dev, prod)"

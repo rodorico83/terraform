@@ -1,0 +1,14 @@
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaRebalance
+metadata:
+  name: scale-down-rebalance
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-cluster
+  annotations:
+    strimzi.io/rebalance-auto-approval: "true"
+    # For manual approval,should be set after proposalReady state from cruise control service
+    #strimzi.io/rebalance-action: "approve"
+spec:
+  mode: remove-brokers
+  brokers: [2]

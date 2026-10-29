@@ -3,10 +3,7 @@ resource "aws_iam_openid_connect_provider" "github" {
   count          = var.github.enable_github_oidc ? 1 : 0
   url            = "https://token.actions.githubusercontent.com"
   client_id_list = ["sts.amazonaws.com"]
-  thumbprint_list = [
-    "6938fd4d98bab03faadb97b34396831e3780aea1",
-    "1c58a2a858174f5219f120e6e0b7b036c0c2f0f1"
-  ]
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1", "1c58a2a858174f5219f120e6e0b7b036c0c2f0f1"]
   tags = local.common_tags
 }
 
@@ -23,12 +20,8 @@ resource "aws_iam_role" "github_actions_tf" {
         Principal = { Federated = aws_iam_openid_connect_provider.github[0].arn }
         Action    = "sts:AssumeRoleWithWebIdentity"
         Condition = {
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud" : "sts.amazonaws.com"
-          }
-          StringLike = {
-            "token.actions.githubusercontent.com:sub" : "repo:${var.github.github_repository}:ref:refs/heads/master"
-          }
+          StringEquals = { "token.actions.githubusercontent.com:aud" : "sts.amazonaws.com" }
+          StringLike = { "token.actions.githubusercontent.com:sub" : "repo:${var.github.github_repository}:ref:refs/heads/master" }
         }
       }
     ]
@@ -59,8 +52,5 @@ resource "aws_eks_access_policy_association" "pipeline_admin" {
   cluster_name  = var.eks.cluster_name
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
   principal_arn = aws_eks_access_entry.pipeline_access[0].principal_arn
-
-  access_scope {
-    type = "cluster"
-  }
+  access_scope { type = "cluster" }
 }

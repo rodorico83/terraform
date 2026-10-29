@@ -17,7 +17,6 @@ resource "aws_security_group" "route53_resolver_outbound" {
     protocol    = "tcp"
     cidr_blocks = [var.on_prem_cidr]
   }
-
   tags = local.common_tags
 }
 
@@ -25,12 +24,9 @@ resource "aws_route53_resolver_endpoint" "outbound" {
   count = (var.enable_vpn && var.environment == "prod") ? 1 : 0
   name      = "outbound-dns"
   direction = "OUTBOUND"
-
   security_group_ids = [aws_security_group.route53_resolver_outbound[0].id]
-
   ip_address { subnet_id = module.vpc.private_subnets[0] }
   ip_address { subnet_id = module.vpc.private_subnets[1] }
-
   tags = local.common_tags
 }
 
@@ -40,11 +36,7 @@ resource "aws_route53_resolver_rule" "to_on_prem" {
   name                 = "forward-to-onprem"
   rule_type            = "FORWARD"
   resolver_endpoint_id = aws_route53_resolver_endpoint.outbound[0].id
-
-  target_ip {
-    ip = var.on_prem_dns_ip
-  }
-
+  target_ip { ip = var.on_prem_dns_ip }
   tags = local.common_tags
 }
 

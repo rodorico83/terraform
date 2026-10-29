@@ -100,7 +100,8 @@ module "software" {
   enable_monitoring    = true
   enable_eck           = false
   enable_finops        = var.enable_finops
-  enable_redis           = true
+  enable_redis         = true
+  enable_rabbitmq      = true
 
   app_namespace = var.environment
 
@@ -126,6 +127,7 @@ module "software" {
     cluster_endpoint  = data.terraform_remote_state.platform.outputs.eks.endpoint
     oidc_provider_arn = data.terraform_remote_state.platform.outputs.eks.oidc_arn
     oidc_provider_url = data.terraform_remote_state.platform.outputs.eks.oidc_url
+    oidc_issuer       = data.terraform_remote_state.platform.outputs.eks.oidc_issuer
     node_role_arn     = data.terraform_remote_state.platform.outputs.eks.node_role_arn
     pod_app_sg        = data.terraform_remote_state.platform.outputs.eks.pod_app_sg
     node_sg           = data.terraform_remote_state.platform.outputs.eks.node_sg

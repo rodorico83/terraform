@@ -7,12 +7,14 @@ kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath="{.status.
 ##################
 #### SECRETS #####
 ##################
-# Get ArgoCD default admin password 2zI9l2Fc8e3cDR7S
+# Get ArgoCD default admin password YJVbYEOHLEqbcsBT
 kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath="{.data.password}" | base64 --decode; echo ""
-# Get Grafana default admin password ubJAW8xSFH4YiSGKxFt6z0yTFmb9lF0x
+# Get Grafana default admin password SUg5mIx3wgIOtC9wplA3T6Ol6nw4RjtS
 kubectl get secret kube-prometheus-stack-grafana -n monitoring -o jsonpath="{.data.admin-password}" | base64 --decode; echo ""
 # Kibana y1KgknxFhLDxxBH1TTWOfGYn
 kubectl get secret elasticsearch-es-elastic-user -n logging -o jsonpath="{.data.elastic}" | base64 --decode
+# Replace secret definition to apply for instance eks secret KMS encrypt on already created cluster with already secrets on it.
+kubectl get secrets --all-namespaces -o json | kubectl replace -f -
 
 ######################
 #### AWS SECRETS #####
@@ -24,10 +26,11 @@ aws secretsmanager get-secret-value --secret-id dev/grafana/admin-password --que
 aws secretsmanager delete-secret   --secret-id dev/grafana/admin-password   --force-delete-without-recovery   --region eu-south-2
 
 
-
-
-terraform state list | grep -E "helm_release|kubernetes_|kubectl_"
-terraform state rm module.platform.helm_release.external_secrets
+############
+## APPLY ###
+############
+# For ArgoCD Appproject creation
+export APP_NAME="rabbitmq-tester" && envsubst < template.yaml | kubectl apply -f -
 
 #####################
 ### PORT FORWARD ####
@@ -44,12 +47,13 @@ ssm send-command   --region eu-south-2   --instance-ids $NODE_ID   --document-na
 kubectl exec -i deployment/db-connectivity-tester -n dev -c <nombre-del-contenedor> -- nslookup name
 kubectl exec -i deployment/db-connectivity-tester -n dev -- traceroute -n -m 5 database.cf4acwm6m1ht.eu-south-2.rds.amazonaws.com
 kubectl exec -i deployment/db-connectivity-tester -n db-connectivity-tester -- nc -zv -w 3 database.cf4acwm6m1ht.eu-south-2.rds.amazonaws.com 5432
-# Exec in specific container
-kubectl exec -i <POD_NAME> -c <CONTAINER_NAME> -n <NAMESPACE> -- <COMMAND>
 # Open shell in container via pod instance name
 kubectl exec -it db-connectivity-tester-7d49b846f4-x9z2p -c my-app-container -n dev -- /bin/sh
 # Print injected variables
 kubectl exec -it db-connectivity-tester-6f6b464dbb-vblpk -n db-connectivity-tester -- printenv | grep -E "host|username|password"
+kubectl exec -i deployment/kube-prometheus-stack-grafana -n monitoring -c grafana -- wget -qO- http://kube-prometheus-stack-alertmanager.monitoring.svc:9093/-/ready
+kubectl exec -it daemonset/aws-node-termination-handler -n kube-system -- wget -qO- http://localhost:9092/metrics | grep aws_node_termination_handler
+
 ######################
 ### ROLLING UPDATE ###
 ######################
@@ -71,7 +75,11 @@ kubectl argo rollouts restart <nombre-rollout> -n <namespace>
 
 # get servicio
 kubectl get svc -n monitoring | grep alertmanager
+kubectl get deployment karpenter -n kube-system -o yaml
 
+###########
+## SCALE ##
+###########
 # Scale a replica set named 'foo' to 3
 kubectl scale --replicas=3 rs/foo
 # Scale a resource identified by type and name specified in "foo.yaml" to 3
@@ -83,7 +91,6 @@ kubectl scale --replicas=5 rc/example1 rc/example2 rc/example3
 # Scale stateful set named 'web' to 3
 kubectl scale --replicas=3 statefulset/web
 
-kubectl exec -i deployment/kube-prometheus-stack-grafana -n monitoring -c grafana -- wget -qO- http://kube-prometheus-stack-alertmanager.monitoring.svc:9093/-/ready
 
 #######################
 #### SET ENV VARS #####
@@ -97,6 +104,10 @@ kubectl set env daemonset aws-node -n kube-system ENABLE_PREFIX_DELEGATION=true
 # Set in helm app
 helm upgrade <NOMBRE_RELEASE> <RUTA_O_NOMBRE_CHART> -n <NAMESPACE> --reuse-values --set env.MI_VARIABLE_DEBUG=true
 
+##########
+### TOP ##
+##########
+kubectl top pod <nombre-del-pod> -n <namespace> --containers
 
 ##############
 #### LOGS ####
@@ -108,42 +119,64 @@ kubectl logs db-connectivity-tester-bd7d5fcc5-4w8f8 -n db-connectivity-tester -c
 kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter --all-containers=true
 # Logs of container using Deployment
 kubectl logs deployment/argocd-server -n argocd -c argo-rollouts-extension
+# Log of previous container instance in pod
+kubectl logs ztunnel-zdrfc -n istio-system -c istio-proxy --previous
+
+
+################
+#### EVENTS ####
+################
+kubectl get events -n istio-system --sort-by='.metadata.creationTimestamp'
 
 #############
 #### CRD ####
 #############
 kubectl get crd rollouts.argoproj.io
+kubectl get crd -l app.kubernetes.io/name=gateway-api
+kubectl api-resources | grep virtualservice
 
+##################
+#### GET ####
+##################
+# get status termination of containers
+kubectl get pod <nombre-del-pod> -n <namespace> -o jsonpath='{.status.containerStatuses[*].terminated}'
+kubectl get pods -n <namespace> -o=custom-columns=NAME:.metadata.name,STATUS:.status.phase,REASON:.status.containerStatuses[*].state.terminated.reason,EXIT_CODE:.status.containerStatuses[*].state.terminated.exitCode
 
-
-# disbale auto sync so the value change persist and is not detected by argo until you sync manually
-argocd app set <APP_NAME> --sync-policy manual
-
-##############
-### LABELS ###
-#############
-kubectl get pod <nombre-del-pod> -o jsonpath='{.metadata.labels}'
+kubectl get events -n namespace
 
 ##################
 #### PODS ####
 ##################
-kubectl get pods -n monitoring -l app.kubernetes.io/name=alertmanager
 # Get container from pod
 kubectl get pod -n kube-system -l k8s-app=aws-node -o jsonpath='{.items[*].spec.containers[*].name}'
 kubectl get pod -n argocd -l app.kubernetes.io/name=argocd-server -o jsonpath='{.items[*].spec.initContainers[*].name}'
 kubectl get pods --field-selector spec.nodeName=<NODE_NAME> --all-namespaces
 # Get specific pod containers
 kubectl get pod  aws-node-nzshf -n kube-system -o jsonpath='{.spec.containers[*].name}'
+# get argo apps
 kubectl get applications.argoproj.io -A # Get Argo applications in all namespaces
-# Delete Pod
-kubectl delete pod -n dev db-connectivity-tester-57d658cf8c-nqjpn
+
+# Get pods with container statuses
+kubectl get pods -n <namespace> -o=custom-columns=NAME:.metadata.name,STATUS:.status.phase,REASON:.status.containerStatuses[*].state.terminated.reason,EXIT_CODE:.status.containerStatuses[*].state.terminated.exitCode
+kubectl get daemonset aws-node -n kube-system -o jsonpath='{.spec.template.spec.containers[?(@.name=="aws-node")].env[?(@.name=="ENABLE_PREFIX_DELEGATION")].value}'
 
 ###################
 #### GET NODES ####
 ###################
-
 # Get nodes table with karpenter pool/ASG group info
 kubectl get nodes -o custom-columns=NAME:.metadata.name,POOL:.metadata.labels."karpenter\.sh/nodepool",CAPACITY:.metadata.labels."karpenter\.sh/capacity-type",MANAGED-BY:.metadata.labels."eks\.amazonaws\.com/nodegroup"
+kubectl get nodes -o custom-columns=NAME:.metadata.name,POOL:.metadata.labels."karpenter\.sh/nodepool",MANAGED-BY:.metadata.labels."eks\.amazonaws\.com/nodegroup"
+kubectl get nodes -o custom-columns=NAME:.metadata.name,MAX-PODS:.status.allocatable.pods
+kubectl get node <nombre-del-nodo> -o jsonpath='{.status.capacity.pods}'
+
+
+############
+### WAIT ###
+############
+kubectl wait deployment/mi-servicio --for=condition=Available --timeout=120s
+kubectl wait node/ip-10-0-1-50.ec2.internal --for=condition=Ready --timeout=90s
+kubectl wait node --selector=karpenter.sh/nodepool=low-cost-pool --for=delete --timeout=300s
+kubectl wait job/migracion-db --for=condition=Complete --timeout=300s
 
 ###################
 ###### HPA ########
@@ -164,14 +197,19 @@ kubectl cordon # set node on maintenance no pods will be scheduled
 kubectl drain <node name>
 
 ############
-#### AUTH ##
+#### AUTH/TOKENS ##
 ############
 kubectl auth can-i list deployments --as=system:serviceaccount:argocd:argocd-application-controller -n default
-kubectl auth can-i create networkpolicy   --as=system:serviceaccount:argocd:argocd-application-controller   --as-group=argocd:business-operators   -n default
+kubectl auth can-i create networkpolicy   --as=system:serviceaccount:argocd:argocd-application-controller   --as-group=argocd:business-operators  -n default
+kubectl auth can-i create serviceaccounts/token -n istio-system
+kubectl create token <NOMBRE_SERVICE_ACCOUNT> [-n <NAMESPACE>]
 
 #############
 #### AWS ####
 #############
+
+# Update .kube
+aws eks update-kubeconfig --region eu-south-2 --name dev-aws-cluster
 
 #### RDS
 aws rds describe-db-instances --region eu-south-2 --query "DBInstances[*].[DBInstanceIdentifier, DBInstanceStatus, Endpoint.Address]" --output table
@@ -180,6 +218,11 @@ aws rds describe-db-instances --region eu-south-2 --query "DBInstances[*].[DBIns
 aws ec2 describe-network-acls --region eu-south-2 --filters "Name=vpc-id,Values=vpc-0665404faa4df3d1" --query "NetworkAcls[*].Entries" --output json
 aws ec2 describe-instances --region eu-south-2 --filters "Name=tag:kubernetes.io/cluster/dev-aws-cluster,Values=owned,shared" "Name=instance-state-name,Values=running" --query "Reservations[0].Instances[0].InstanceId" --output text
 
+aws ec2 describe-instances \
+    --filters "Name=tag:karpenter.sh/nodepool,Values=low-cost-pool-infra" \
+    --query "Reservations[*].Instances[*].{InstanceId:InstanceId, Type:InstanceType, State:State.Name, PrivateIP:PrivateIpAddress, AZ:Placement.AvailabilityZone, LaunchTime:LaunchTime}" \
+    --output table
+
 #### SUBNETS
 aws ec2 describe-subnets --query "Subnets[*].[SubnetId,CidrBlock,AvailableIpAddressCount]" --output table
 aws ec2 describe-subnets \
@@ -187,6 +230,11 @@ aws ec2 describe-subnets \
   --filters "Name=vpc-id,Values=vpc-XXXXXXXXXXXXXXXXX" \
   --query "Subnets[*].[SubnetId, CidrBlock, AvailabilityZone, AvailableIpAddressCount, MapPublicIpOnLaunch]" \
   --output table
+
+
+# ECR
+# login registry for helm publishing
+aws ecr get-login-password --region <region> | helm registry login --username AWS --password-stdin <tu-id>.dkr.ecr.<region>.amazonaws.com
 
 
 #### ASG
@@ -199,6 +247,26 @@ aws eks list-associated-access-policies --cluster-name dev-aws-cluster --princip
 
 #### IAM
 aws iam list-attached-role-policies --role-name dev-eks-nodes-role --region eu-south-2
+
+# AWS Shutdown spot instance
+aws ec2 describe-instances \
+    --instance-ids <i-xxxxxxxxx> \
+    --query "Reservations[].Instances[].SpotInstanceRequestId" \
+    --output text
+aws ec2 cancel-spot-instance-requests --spot-instance-request-ids sir-it8fj1xg
+aws ec2 terminate-instances --instance-ids i-0354899c2882c95ea
+
+
+# AWS Create Registry and push Images/HelmCharts
+aws ecr create-repository \
+    --repository-name db-tester \
+    --image-scanning-configuration scanOnPush=true \
+    --image-tag-mutability MUTABLE
+aws ecr get-login-password --region eu-south-2 | docker login --username AWS --password-stdin 555968473487.dkr.ecr.eu-south-2.amazonaws.com
+aws ecr get-login-password --region eu-south-2 | helm registry login --username AWS --password-stdin 555968473487.dkr.ecr.eu-south-2.amazonaws.com
+podman build -t db-tester .
+podman tag db-tester:latest 555968473487.dkr.ecr.eu-south-2.amazonaws.com/aws-registry/db-tester:latest
+podman push 555968473487.dkr.ecr.eu-south-2.amazonaws.com/aws-registry/db-tester:latest
 
 ################
 #### ARGOCD ####
@@ -217,7 +285,7 @@ argocd app set <APP_NAME> --sync-policy manual
 
 # 1. GESTIÓN DE REPOSITORIOS
 # ------------------------------------------------------------------------------
-helm repo add <nombre-repo> <URL-repo>                 # Agregar un repositorio remoto
+helm repo add <nombre-repo> <URL-repo>                  # Agregar un repositorio remoto
 helm repo update                                        # Actualizar el catálogo local de charts
 helm repo list                                          # Listar repositorios configurados
 helm search repo <palabra-clave>                        # Buscar un chart en repositorios locales
@@ -225,47 +293,44 @@ helm repo remove <nombre-repo>                          # Eliminar un repositori
 
 
 # 2. INSPECCIÓN Y RENDERIZADO (DEBUG / GITOPS)
-# ------------------------------------------------------------------------------
 helm get values <nombre-release> -n <namespace>         # Ver el values.yaml aplicado en un release
 helm get manifest <nombre-release> -n <namespace>       # Ver los manifiestos YAML de una release activa
 helm get notes <nombre-release> -n <namespace>          # Ver notas e instrucciones posinstalación
 helm install <release> <repo>/<chart> -f values.yaml --dry-run --debug -n <namespace> # Simular instalación sin aplicar
-
+helm template mi-release ./mi-chart -f values.yaml | kubectl apply -f - # Apply kubectl file with a values file using Helm
 
 # 3. INSTALACIÓN Y DESPLIEGUE
-# ------------------------------------------------------------------------------
-helm install <release> <repo>/<chart> -n <namespace> --create-namespace                 # Instalar creando namespace
+helm install <release> <repo>/<chart> -n <namespace> --create-namespace                # Instalar creando namespace
 helm install <release> <repo>/<chart> -f values.yaml -n <namespace>                    # Instalar con archivo de valores
 helm install <release> <repo>/<chart> --set key=value,key2=value2 -n <namespace>       # Sobrescribir variables por CLI
-
+helm get manifest karpenter-crd -n kube-system | kubectl apply -f -
 
 # 4. ACTUALIZACIÓN Y MANTENIMIENTO (UPGRADES)
-# ------------------------------------------------------------------------------
 helm upgrade <release> <repo>/<chart> -f values.yaml -n <namespace>                    # Actualizar release existente
-helm upgrade --install <release> <repo>/<chart> -f values.yaml -n <namespace> --create-namespace # Upsert (instala o actualiza)
-helm upgrade <release> <repo>/<chart> -f values.yaml -n <namespace> --atomic           # Rollback automático si falla
+helm upgrade --install <release> <repo>/<chart> -f values.yaml -n <namespace> --create-namespace # (instala o actualiza)
+helm upgrade --install karpenter-crd oci://public.ecr.aws/karpenter/karpenter-crd --version 1.0.6 -n kube-system --force
+# Rollback automático si falla
+helm upgrade <release> <repo>/<chart> -f values.yaml -n <namespace> --atomic  --timeout 3m
 helm upgrade <RELEASE_NAME> <CHART_NAME> -n monitoring --set replicaCount=0 --set autoscaling.enabled=false
 
 # 5. CONSULTAS E HISTORIAL
-# ------------------------------------------------------------------------------
 helm list -n <namespace>                               # Listar releases en un namespace especifico
 helm list -A                                           # Listar releases en TODOS los namespaces
 helm history <nombre-release> -n <namespace>           # Ver el historial de revisiones de una release
 
-
 # 6. ROLLBACK Y RECUPERACIÓN ANTE FALLOS
-# ------------------------------------------------------------------------------
 helm rollback <nombre-release> <numero-revision> -n <namespace> # Volver a una versión previa (ej: revisión 2)
 
-
 # 7. DESINSTALACIÓN Y LIMPIEZA
-# ------------------------------------------------------------------------------
 helm uninstall <nombre-release> -n <namespace>          # Eliminar release y sus recursos en Kubernetes
 helm uninstall <nombre-release> --keep-history -n <namespace> # Eliminar manteniendo historial para auditoría
 
 
+helm lint
 
-### INFRA SLEEP
-kubectl delete nodepool low-cost-pool
-terraform destroy --target module.software.kubectl_manifest.karpenter_node_pool --auto-approve
-terraform destroy --target module.platform.aws_eks_node_group.private_nodes --auto-approve
+
+
+# INFRA BOOT
+terraform apply --target module.platform.aws_eks_node_group.private_nodes --auto-approve && \
+cd ../3 -software && \
+terraform apply --target module.software.kubectl_manifest.karpenter_node_pool --auto-approve

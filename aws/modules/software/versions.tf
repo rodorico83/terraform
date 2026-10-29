@@ -19,7 +19,14 @@ terraform {
       source  = "gavinbunney/kubectl"
       version = ">= 1.14.0"
     }
-
+    grafana = {
+      source  = "grafana/grafana"
+      version = ">= 2.0.0"
+    }
+    http = {
+      source  = "hashicorp/http"
+      version = ">= 3.0.0"
+    }
     /*wiz = {
       source  = "tf.app.wiz.io/wizsec/wiz" # Proveedor oficial de Wiz
       version = "~> 1.22"

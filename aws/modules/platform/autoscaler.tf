@@ -38,12 +38,11 @@ resource "aws_iam_role" "cluster_autoscaler" {
       {
         Action = "sts:AssumeRoleWithWebIdentity"
         Effect = "Allow"
-        Principal = {
-          Federated = aws_iam_openid_connect_provider.eks.arn
-        }
+        Principal = { Federated = aws_iam_openid_connect_provider.eks.arn }
         Condition = {
           StringEquals = {
-            "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub" = "system:serviceaccount:kube-system:cluster-autoscaler"
+            "${local.oidc_issuer}:sub" = "system:serviceaccount:kube-system:cluster-autoscaler"
+            "${local.oidc_issuer}:aud" = "sts.amazonaws.com"
           }
         }
       }
@@ -70,6 +69,11 @@ resource "helm_release" "cluster_autoscaler" {
   }
 
   set {
+    name  = "rbac.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = aws_iam_role.cluster_autoscaler.arn
+  }
+
+  set {
     name  = "awsRegion"
     value = var.aws_region
   }
@@ -77,11 +81,6 @@ resource "helm_release" "cluster_autoscaler" {
   set {
     name  = "rbac.serviceAccount.name"
     value = "cluster-autoscaler"
-  }
-
-  set {
-    name  = "rbac.serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = aws_iam_role.cluster_autoscaler.arn
   }
 
   depends_on = [aws_eks_node_group.private_nodes]

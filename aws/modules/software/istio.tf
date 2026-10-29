@@ -1,50 +1,5 @@
 # Para escalar a cientos de microservicios en una arquitectura híbrida y multi-entorno como la tuya, Istio (con proxies Envoy) es el estándar de la industria.
 # A esta escala, resuelve problemas críticos que Ingress-NGINX o Kubernetes básico no pueden gestionar: seguridad Zero-Trust con mTLS automático de servicio a servicio, observabilidad con trazas distribuidas, control granular de tráfico (Canary, Circuit Breaking, Retries) e interconexión segura con el clúster On-Premises vía VPN.
-# 1. Diagrama de Arquitectura con Istio Service Mesh
-# flowchart TB
-#    subgraph Edge["1. Capa Edge / Ingress"]
-#        NLB["AWS Network Load Balancer (L4)"]
-#        IstioGW["Istio Ingress Gateway (Envoy Pods con Pod Anti-Affinity)"]
-#        NLB --> IstioGW
-#    end
-#
-#    subgraph ControlPlane["2. Istio Control Plane (modules/software)"]
-#        Istiod["istiod (Pilot + Citadel + Galley)<br/>• Distribución de Configuración Envoy<br/>• Emisión de Certificados mTLS (x509)"]
-#    end
-#
-#    subgraph MeshDataPlane["3. Data Plane en EKS (Envoy Sidecars)"]
-#        subgraph PodA["Microservicio A (Namespace: dev)"]
-#            AppA["Contenedor App"]
-#            EnvoyA["Envoy Proxy (Sidecar)"]
-#            AppA <--> EnvoyA
-#        end
-#
-#        subgraph PodB["Microservicio B (Namespace: dev)"]
-#            AppB["Contenedor App"]
-#            EnvoyB["Envoy Proxy (Sidecar)"]
-#            AppB <--> EnvoyB
-#        end
-#
-#        IstioGW -->|mTLS Estricto| EnvoyA
-#        EnvoyA -->|mTLS Estricto + AuthzPolicy| EnvoyB
-#    end
-#
-#    subgraph HybridVPN["4. Malla Híbrida / Multi-Cluster (Site-to-Site VPN)"]
-#        IstioEastWest["Istio East-West Gateway (AWS)"]
-#        OnPremMesh["Istio Service Mesh (On-Premises Cluster)"]
-#        IstioEastWest <==>|mTLS sobre VPN| OnPremMesh
-#    end
-#
-#    subgraph Telemetry["5. Observabilidad & Malla"]
-#        Kiali["Kiali (Topología de la Malla en tiempo real)"]
-#        Jaeger["Jaeger / Tempo (Trazas Distribuidas)"]
-#        PromGraf["Prometheus & Grafana (Métricas Envoy)"]
-#    end
-#
-#    EnvoyA -.->|Métricas & Trazas| PromGraf
-#    EnvoyB -.->|Métricas & Trazas| PromGraf
-#    Istiod -.->|Control & Sync| EnvoyA
-#    Istiod -.->|Control & Sync| EnvoyB
 
 
 # 1. Obtener el manifiesto multi-recurso oficial
@@ -57,7 +12,7 @@ data "kubectl_file_documents" "gateway_api_docs" {
   content = data.http.gateway_api_crds.response_body
 }
 
-# 3. Registrar los CRDs en el API Server
+# 3. Registrar los Gateway CRDs en el API Server
 resource "kubectl_manifest" "gateway_api_install" {
   for_each  = data.kubectl_file_documents.gateway_api_docs.manifests
   yaml_body = each.value
@@ -88,7 +43,6 @@ resource "helm_release" "istio_cni" {
     yamlencode({
       profile = "ambient"
       priorityClassName = "system-node-critical"
-      #nodeSelector = { "karpenter.sh/capacity-type" = "spot" }
       cni = { ambient = { dnsCapture = false } }
     })
   ]
@@ -97,6 +51,7 @@ resource "helm_release" "istio_cni" {
 }
 
 # 2. Istio Control Plane (istiod)
+
 resource "helm_release" "istiod" {
   count      = var.enable_istio ? 1 : 0
   name       = "istiod"
@@ -112,43 +67,60 @@ resource "helm_release" "istiod" {
         meshID = "hybrid-mesh"
         #multiCluster = { clusterName = "${var.environment}-aws-cluster" }
       }
+      nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
 
-      nodeSelector = { "eks.amazonaws.com/nodegroup" = "private-workers" }
+      podDisruptionBudget = {
+        enabled      = true
+        minAvailable = 1
+      }
+      autoscaleEnabled = false
+      replicaCount     = 1 # Alta disponibilidad con 2 réplicas
 
-      #telemetry = { enabled = true }
-      #telemetry = { enabled = true }
-      # Ofertado directamente por el chart de istiod para Prometheus Operator:
-      #serviceMonitor = {
-      #  enabled = true
-      #  additionalLabels = {
-      #    release = "kube-prometheus-stack"
-      #  }
-      #}
+      topologySpreadConstraints = [
+        {
+          maxSkew           = 1
+          topologyKey       = "topology.kubernetes.io/zone"
+          whenUnsatisfiable = "DoNotSchedule"
+          labelSelector = { matchLabels = { app = "istiod" } }
+        }
+      ]
+
       meshConfig = {
         enableAutoMtls = true # Cifrado mTLS automático entre todos los pods
         enablePrometheusMerge = true # 🎯 Fusiona métricas para que Prometheus las lea
         accessLogFile  = "/dev/stdout"
         defaultConfig = {
-          proxyStatsMatcher = {
-            # Incluye métricas detalladas de circuit breaker, retries y timeouts
+          proxyStatsMatcher = { # Incluye métricas detalladas de circuit breaker, retries y timeouts
             inclusionPrefixes = ["cluster.", "listener."]
           }
           tracing = { sampling = 10.0 } # 10% de trazas para trazabilidad distribuida sin saturar
         }
       }
+
       pilot = {
         autoscaleEnabled = false
-        replicaCount     = 2 # Alta disponibilidad en plano de control
+        replicaCount     = 1 # Alta disponibilidad en plano de control
+        resources = {
+          requests = {
+            cpu    = "100m"
+            memory = "128Mi"
+          }
+          limits = {
+            cpu    = "200m"
+            memory = "256Mi"
+          }
+        }
         env = {
           PILOT_ENABLE_AMBIENT = "true"
-          #PILOT_ENABLE_XDS_IDENTITY_CHECK = "false" # 👈 Evita el rechazo de tokens xDS no estrictos en entornos EKS/AWS
+          # EKS tokens has  aud: "sts.amazonaws.com" In order the identity check (token verification) to work this is needed
+          TOKEN_AUDIENCE = "sts.amazonaws.com"
+          #PILOT_ENABLE_XDS_IDENTITY_CHECK = "false" # Evita el rechazo de tokens xDS no estrictos en entornos EKS/AWS
           #PILOT_ENABLE_INSECURE_IMPERSONATION = "true"
         } # Activa las capacidades de Ambient Mesh en Pilot
       }
     })
   ]
-
-  depends_on = [helm_release.istio_base, helm_release.istio_cni]
+  depends_on = [helm_release.istio_base, helm_release.kube_prometheus_stack,kubectl_manifest.karpenter_node_pool_infra]
 }
 
 
@@ -178,7 +150,7 @@ resource "kubectl_manifest" "istiod_service_monitor" {
           interval: 15s
   YAML
 
-  depends_on = [helm_release.istiod, helm_release.kube_prometheus_stack]
+  depends_on = [helm_release.istiod]
 }
 
 
@@ -194,19 +166,10 @@ resource "helm_release" "ztunnel" {
 
   values = [
     yamlencode({
-      nodeSelector = { "karpenter.sh/capacity-type" = "spot" }
       priorityClassName = "system-node-critical"
       # Configuración de métricas para ztunnel
       #telemetry = { enabled = true }
-
       #ztunnel = { env = { CLUSTER_ID = "Kubernetes" } }  # Si usas EKS, fuerza la validación de tokens de servicio nativos
-      # Si usas Prometheus Operator, puedes habilitar PodMonitor/ServiceMonitor
-      #prometheus = {
-      #  podMonitor = {
-      #    enabled = true
-      #    additionalLabels = { release = "kube-prometheus-stack" }
-      #  }
-      #}
       resources = {
         requests = { cpu = "100m", memory = "128Mi" }
         limits   = { cpu = "500m", memory = "512Mi" }
@@ -242,7 +205,7 @@ resource "kubectl_manifest" "ztunnel_pod_monitor" {
           path: /stats/prometheus
   YAML
 
-  depends_on = [helm_release.ztunnel, helm_release.kube_prometheus_stack]
+  depends_on = [helm_release.ztunnel]
 }
 
 resource "kubectl_manifest" "waypoint_pod_monitor" {
@@ -268,7 +231,7 @@ resource "kubectl_manifest" "waypoint_pod_monitor" {
           path: /stats/prometheus
   YAML
 
-  depends_on = [helm_release.istiod, helm_release.kube_prometheus_stack]
+  depends_on = [helm_release.istiod]
 }
 
 
@@ -288,9 +251,9 @@ resource "helm_release" "kiali_server" {
 
   values = [
     yamlencode({
-      auth = { strategy = "anonymous" }# Ideal para laboratorios. Cambiar a 'token' u 'openid' en prod.
+      auth = { strategy = "anonymous" } # Ideal para laboratorios. Cambiar a 'token' u 'openid' en prod.
 
-      deployment = { nodeSelector = { "karpenter.sh/capacity-type" = "spot" } }# Reutiliza tus nodos spot
+      deployment = { nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" } }
 
       external_services = {
         # 🎯 Enlace directo con el DNS interno de tu kube-prometheus-stack
@@ -301,23 +264,17 @@ resource "helm_release" "kiali_server" {
           in_cluster_url = "http://kube-prometheus-stack-grafana.monitoring.svc.cluster.local" # 👈 Para las llamadas del pod de Kiali
           auth = {
             type = "bearer"
-            bearer = {
-              # Pasamos el valor usando una variable de entrada de Terraform
-              token = var.grafana_read_token
-            }
+            bearer = { token = var.grafana_read_token }
           }
         }
-        istio = {
-          # 🎯 Habilita el soporte explícito para recopilar telemetría L4/L7 de Ambient
-          ambient_enabled = true
-        }
+        istio = { ambient_enabled = true } # 🎯 Habilita para recopilar telemetría L4/L7 de Ambient
       }
       server = { port = 20001 }
     })
   ]
 
   # Asegura que Istio y Prometheus estén listos antes de levantar la interfaz
-  depends_on = [helm_release.ztunnel, helm_release.kube_prometheus_stack]
+  depends_on = [helm_release.ztunnel]
 }
 
 # Ingress para exponer la interfaz web de Kiali públicamente a través de NGINX
@@ -352,9 +309,7 @@ resource "kubernetes_ingress_v1" "kiali_ingress" {
           backend {
             service {
               name = "kiali"
-              port {
-                number = 20001 # Puerto HTTP interno de Kiali
-              }
+              port { number = 20001 } # Puerto HTTP interno de Kiali
             }
           }
         }
@@ -362,7 +317,7 @@ resource "kubernetes_ingress_v1" "kiali_ingress" {
     }
   }
 
-  depends_on = [helm_release.kiali_server, helm_release.nginx_ingress]
+  depends_on = [helm_release.kiali_server, helm_release.cert_manager]
 }
 
 

@@ -22,7 +22,7 @@ spec:
         app: caller
     spec:
       nodeSelector:
-        karpenter.sh/capacity-type: "spot"
+        karpenter.sh/nodepool: "low-cost-pool"
       containers:
       - name: curl
         image: curlimages/curl
@@ -52,7 +52,7 @@ spec:
         app: backend
     spec:
       nodeSelector:
-        karpenter.sh/capacity-type: "spot"
+        karpenter.sh/nodepool: "low-cost-pool"
       containers:
       - name: httpbin
         image: mccutchen/go-httpbin

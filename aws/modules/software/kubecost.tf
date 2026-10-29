@@ -4,7 +4,6 @@ resource "kubernetes_namespace" "kubecost" {
 
   metadata {
     name = "kubecost"
-
     labels = { "app.kubernetes.io/managed-by" = "terraform" }
   }
 }
@@ -25,7 +24,6 @@ resource "helm_release" "kubecost" {
 
       global = {
         currency  = "USD"
-        # 🎯 CAMBIO V3: clusterId es el identificador requerido en v3.x
         clusterId = var.eks.cluster_name
       }
 
@@ -37,12 +35,12 @@ resource "helm_release" "kubecost" {
 
       resources = {
         requests = {
-          cpu    = "200m"
-          memory = "400Mi"
+          cpu    = "100m"
+          memory = "128Mi"
         }
         limits = {
-          cpu    = "1000m"
-          memory = "1Gi"
+          cpu    = "250m"
+          memory = "512Mi"
         }
       }
 
@@ -73,12 +71,14 @@ resource "helm_release" "kubecost" {
         size         = "10Gi"
       }
       # 🎯 Despliegue en instancias Spot
-      nodeSelector = { "karpenter.sh/capacity-type" = "spot" }
+      nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
     })
   ]
 
   depends_on = [
     kubernetes_namespace.kubecost,
-    helm_release.kube_prometheus_stack
+    helm_release.kube_prometheus_stack,
+    helm_release.cert_manager,
+    kubectl_manifest.karpenter_node_pool_infra
   ]
 }

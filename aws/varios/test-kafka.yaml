@@ -1,0 +1,150 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-kafka
+---
+# ==============================================================================
+# 1. Topic de Pruebas con 2 Particiones
+# ==============================================================================
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: demo-two-keys
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: kafka-cluster
+spec:
+  partitions: 2 # Requerido: Mínimo 2 particiones para repartir las 2 keys entre 2 Pods
+  replicas: 2
+  config:
+    retention.ms: 86400000
+
+---
+
+
+# ==============================================================================
+# 2. Producer: Genera mensajes alternando únicamente entre "key-a" y "key-b"
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-producer-2keys
+  namespace: test-kafka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-producer-2keys
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka-producer-2keys
+        app: kafka-producer-2keys
+    spec:
+      containers:
+        - name: producer
+          # Usamos una imagen ligera de Python oficial
+          image: python:3.11-slim
+          resources:
+            requests:
+              cpu: "50m"     # Reducido drásticamente al ser un script en Python puro
+              memory: "64Mi"
+            limits:
+              cpu: "200m"    # Ya no necesita 1 CPU completa
+              memory: "128Mi"
+          command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Instalando dependencias de Kafka para Python..."
+              pip install --no-cache-dir confluent-kafka > /dev/null 2>&1
+              
+              echo "Iniciando Productor de 2 Keys en Python..."
+              python3 -u - << 'EOF'
+              import json
+              import time
+              from confluent_kafka import Producer
+
+              conf = {
+                  'bootstrap.servers': 'kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092'
+              }
+              producer = Producer(conf)
+
+              def delivery_report(err, msg):
+                  if err is not None:
+                      print(f"[ERROR] Falló la entrega del mensaje: {err}")
+                  else:
+                      print(f"[PRODUCER] Mensaje entregado a la partición {msg.partition()} [Offset: {msg.offset()}]")
+
+              counter = 1
+              while True:
+                  key = "key-a" if (counter % 2 == 0) else "key-z"
+                  payload = {
+                      "event_id": counter,
+                      "key_type": key,
+                      "data": f"payload-{counter}"
+                  }
+                  message_str = json.dumps(payload)
+
+                  # Producir mensaje de forma asíncrona con clave
+                  producer.produce(
+                      'demo-two-keys',
+                      key=key.encode('utf-8'),
+                      value=message_str.encode('utf-8'),
+                      callback=delivery_report
+                  )
+              
+                  # Asegura el envío en segundo plano
+                  producer.poll(0)
+
+                  print(f"[PRODUCER] Enviado mensaje #{counter} con KEY: {key}")
+                  counter += 1
+                  time.sleep(10)
+              EOF
+---
+# ==============================================================================
+# 3. Consumer Group: 2 Réplicas para procesar las 2 Particiones/Keys por separado
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-consumer-2keys
+  namespace: test-kafka
+spec:
+  replicas: 2 # Al haber 2 particiones, Kafka asigna Partición 0 al Pod 1 y Partición 1 al Pod 2
+  selector:
+    matchLabels:
+      app: kafka-consumer-2keys
+
+  template:
+    metadata:
+      labels:
+        app: kafka-consumer-2keys
+    spec:
+      containers:
+        - name: consumer
+          image: quay.io/strimzi/kafka:1.1.0-kafka-4.3.0
+          resources:
+            requests:
+              cpu: "50m"     # HPA looks at this to calculate the 70% or 80% threshold
+              memory: "256Mi"
+            limits:
+              cpu: "200m"
+              memory: "700Mi"
+          command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Iniciando Consumidor..."
+              /opt/kafka/bin/kafka-console-consumer.sh \
+                --bootstrap-server kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092 \
+                --topic demo-two-keys \
+                --group group-2keys-processor \
+                --consumer-property partition.assignment.strategy=org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+                --property print.key=true \
+                --property print.partition=true \
+                --property print.offset=true \
+                --property key.separator=" | Key: " \
+                #--formatter "kafka.tools.DefaultMessageFormatter"
+              
+              

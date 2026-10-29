@@ -8,14 +8,26 @@ resource "aws_iam_role" "eks_cluster" {
   tags = local.common_tags
 }
 
-resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+resource "aws_iam_role_policy_attachment" "eks_cluster_policies" {
+  for_each = toset([
+    "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
+    "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"])
+  policy_arn = each.value
   role       = aws_iam_role.eks_cluster.name
 }
 
-resource "aws_iam_role_policy_attachment" "eks_vpc_resource_controller" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
-  role       = aws_iam_role.eks_cluster.name
+
+# Clave KMS dedicada para el cifrado de Secretos en EKS
+resource "aws_kms_key" "eks_secrets" {
+  description             = "KMS key for EKS secrets envelope encryption"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  tags = local.common_tags
+}
+
+resource "aws_kms_alias" "eks_secrets_alias" {
+  name          = "alias/${var.environment}-eks-secrets-key"
+  target_key_id = aws_kms_key.eks_secrets.key_id
 }
 
 # 2. EKS Control Plane
@@ -34,15 +46,18 @@ resource "aws_eks_cluster" "main" {
     bootstrap_cluster_creator_admin_permissions = true # Mantiene a tu usuario actual como administrador
   }
 
-  tags = local.common_tags
+  encryption_config {
+    provider { key_arn = aws_kms_key.eks_secrets.arn }
+    resources = ["secrets"]
+  }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.eks_cluster_policy,
-    aws_iam_role_policy_attachment.eks_vpc_resource_controller
-  ]
+  tags = local.common_tags
+  depends_on = [aws_iam_role_policy_attachment.eks_cluster_policies]
 }
 
 # 3. IAM Role & Policies for EKS Worker Node group
+
+# 3.1 Trust role for ec2 service
 resource "aws_iam_role" "eks_nodes" {
   name = "eks-node-role"
   assume_role_policy = jsonencode({
@@ -52,6 +67,7 @@ resource "aws_iam_role" "eks_nodes" {
   tags = local.common_tags
 }
 
+# 3.2 Attach required ec2 policies
 resource "aws_iam_role_policy_attachment" "node_policies" {
   for_each = toset([
     "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
@@ -68,6 +84,7 @@ resource "aws_iam_role_policy_attachment" "node_policies" {
 resource "aws_launch_template" "eks_nodes" {
   name_prefix   = "${var.environment}-eks-node-template"
   description   = "Launch template for EKS worker nodes with custom SG"
+
   vpc_security_group_ids = [
     aws_security_group.eks_nodes.id,
     aws_eks_cluster.main.vpc_config[0].cluster_security_group_id # Mantiene también el SG por defecto de EKS
@@ -121,9 +138,13 @@ resource "aws_eks_node_group" "private_nodes" {
   tags = merge(
     local.common_tags,
     {
+      # Group owned by the cluster
       "kubernetes.io/cluster/${aws_eks_cluster.main.name}" = "owned"
+      # Enable scaling via cluster-autoscaler
       "k8s.io/cluster-autoscaler/enabled"                  = "true"
+      # Owned by cluster-autoscaler running in specified cluster
       "k8s.io/cluster-autoscaler/${aws_eks_cluster.main.name}" = "owned"
+      # Zone info for cluster-autoscaler before creating node to scale based on topology or affinity constrains
       "k8s.io/cluster-autoscaler/node-template/label/topology.kubernetes.io/zone" = ""
     }
   )
@@ -171,74 +192,63 @@ resource "aws_eks_access_policy_association" "devops_admin" {
 }
 
 
-
-/*
-# 7.1. EKS API Control Admission (safeguard), Fail on "CREATE", "UPDATE", "DELETE" calls over critical system clusters
-resource "kubernetes_validating_admission_policy" "block_system_namespace_mutation" {
-  metadata {
-    name = "block-system-namespace-mutation"
-  }
-
-  spec {
-    failure_policy = "Fail" # Fail-closed stance
-
-    match_constraints {
-      resource_rules {
-        api_groups   = ["*"]
-        api_versions = ["*"]
-        resources    = ["*"] # 🎯 Catch EVERYTHING (Pods, Deployments, Services, ConfigMaps)
-        operations   = ["CREATE", "UPDATE", "DELETE"]
-      }
-    }
-
-    validations {
-      # 🔐 CEL Logic: Hard blocks any structural state changes targeting infra zones
-      expression = "!(has(request.namespace) && request.namespace in ['kube-system', 'karpenter', 'istio-system']) || ('system:masters' in request.userInfo.groups)"
-      message    = "Zero-Trust Guard: Workload deployers are prohibited from mutating any infrastructure state inside system namespaces."
-    }
-  }
-}
-
-# 7.2. Bind Previous admission policy to a Deny action
-resource "kubernetes_validating_admission_policy_binding" "block_system_namespace_mutation_binding" {
-  metadata {
-    name = "block-system-namespace-mutation-binding"
-  }
-
-  spec {
-    policy_name        = kubernetes_validating_admission_policy.block_system_namespace_mutation.metadata.name
-    validation_actions = ["Deny"] # 🛑 Drop transaction immediately at the API gate
-
-    match_resources {
-      namespace_selector {} # Apply cluster-wide
-    }
-  }
-}
-
-# 7.1. EKS API Control Admission (safeguard), Fail on "CREATE", "UPDATE", "DELETE" calls over critical system clusters
-resource "kubernetes_manifest" "admission_policy" {
+# 7.1. EKS API Control Admission (safeguard)
+/*resource "kubernetes_manifest" "enforce_gitops_workloads" {
   manifest = {
     apiVersion = "admissionregistration.k8s.io/v1"
     kind       = "ValidatingAdmissionPolicy"
     metadata = {
-      name = "block-system-namespace-mutation"
+      name = "enforce-gitops-workloads"
     }
     spec = {
-      failure_policy = "Fail" # Fail-closed stance
-      match_constraints = {
-        resource_rules = {
-          api_groups   = ["*"]
-          api_versions = ["*"]
-          resources    = ["*"] # 🎯 Catch EVERYTHING (Pods, Deployments, Services, ConfigMaps)
-          operations   = ["CREATE", "UPDATE", "DELETE"]
-        }
+      failurePolicy = "Fail"
+      matchConstraints = {
+        resourceRules = [
+          {
+            apiGroups   = ["apps"]
+            apiVersions = ["v1"]
+            resources   = ["deployments", "statefulsets", "daemonsets"]
+            operations  = ["CREATE", "UPDATE"]
+          },
+          {
+            apiGroups   = ["batch"]
+            apiVersions = ["v1"]
+            resources   = ["jobs", "cronjobs"]
+            operations  = ["CREATE", "UPDATE"]
+          },
+          {
+            apiGroups   = [""]
+            apiVersions = ["v1"]
+            resources   = ["pods"]
+            operations  = ["CREATE"]
+          }
+        ]
       }
 
-      validations = {
-        # 🔐 CEL Logic: Hard blocks any structural state changes targeting infra zones
-        expression = "!(has(request.namespace) && request.namespace in ['kube-system', 'karpenter', 'istio-system']) || ('system:masters' in request.userInfo.groups)"
-        message    = "Zero-Trust Guard: Workload deployers are prohibited from mutating any infrastructure state inside system namespaces."
-      }
+      validations = [
+        {
+          expression = <<-CEL
+            // 1. Permitir siempre a ArgoCD (vía EKS Access Entry group o ServiceAccount)
+            ('argocd:business-operators' in request.userInfo.groups)
+            || ('system:serviceaccounts:argocd' in request.userInfo.groups)
+
+            // 2. Permitir a Break-Glass / Admins de infraestructura
+            || ('system:masters' in request.userInfo.groups)
+
+            // 3. Permitir a los controladores internos nativos de K8s (¡vital para que funcionen los Deployments/Pods!)
+            || (request.userInfo.username.startsWith('system:kube-controller-manager'))
+            || (request.userInfo.username.startsWith('system:node:'))
+            || ('system:nodes' in request.userInfo.groups)
+
+            // 4. Permitir a herramientas de plataforma/escalado (ej. Karpenter, operadores del sistema)
+            || request.userInfo.groups.exists(g, g in [
+                 'system:serviceaccounts:karpenter',
+                 'system:serviceaccounts:kube-system'
+               ])
+          CEL
+          message    = "GitOps Enforcement: Direct creation or mutation of workloads is forbidden. All deployments must originate via ArgoCD."
+        }
+      ]
     }
   }
 }
@@ -252,15 +262,16 @@ resource "kubernetes_manifest" "admission_policy_binding" {
       name = "block-system-namespace-mutation-binding"
     }
     spec = {
-      policy_name        = kubernetes_manifest.admission_policy.manifest.metadata.name
-      validation_actions = ["Deny"] # 🛑 Drop transaction immediately at the API gate
-      match_resources = {
-        namespace_selector = {} # Apply cluster-wide
+      policyName        = kubernetes_manifest.enforce_gitops_workloads.manifest.metadata.name
+      # En producción: empieza con ["Warn", "Audit"] y cuando verifiques que ArgoCD opera sin fallos, pasa a ["Deny"]
+      validationActions = ["Deny"]
+      matchResources = {
+        namespaceSelector = {}
       }
     }
   }
-}*/
-
+}
+*/
 # 8. Get the TLS certificate thumbprint of the EKS OIDC Issuer URL
 data "tls_certificate" "eks" {
   url = aws_eks_cluster.main.identity[0].oidc[0].issuer
@@ -281,13 +292,25 @@ resource "aws_security_group" "eks_nodes" {
 
   tags = merge(
     local.common_tags,
-    {
-      "kubernetes.io/cluster/${aws_eks_cluster.main.name}" = "owned"
-    }
+    #{
+    #  "kubernetes.io/cluster/${aws_eks_cluster.main.name}" = "owned"
+    #}
   )
 }
 
 # 11. Security Group Rules
+# Permite que las peticiones nacidas en los nodos worker alcancen el endpoint del Control Plane de EKS
+resource "aws_security_group_rule" "eks_nodes_to_control_plane" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  description              = "Permite el trafico HTTPS desde los nodos worker hacia la API del Control Plane"
+  security_group_id        = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
+  source_security_group_id = aws_security_group.eks_nodes.id
+}
+
+
 resource "aws_security_group_rule" "ingress_premises" {
   type              = "ingress"
   from_port         = 0

@@ -56,5 +56,5 @@ module "network" {
   enable_nat_gateway     = var.enable_nat_gateway
   one_nat_gateway_per_az = false
   enable_vpn             = var.enable_vpn # Toggle as needed
-
+  aws_region             = var.aws_region
 }

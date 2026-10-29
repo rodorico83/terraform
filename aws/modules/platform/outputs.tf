@@ -12,6 +12,7 @@ output "eks" {
     node_sg         = aws_security_group.eks_nodes.id
     oidc_arn        = aws_iam_openid_connect_provider.eks.arn
     oidc_url        = aws_iam_openid_connect_provider.eks.url
+    oidc_issuer     = replace(aws_iam_openid_connect_provider.eks.url, "https://", "")
     pod_app_sg      = aws_security_group.pod_app_sg.id
   }
 }
@@ -26,9 +27,14 @@ output "db" {
     secret_arn = try(aws_db_instance.postgres.master_user_secret[0].secret_arn, null)
     sg_group   = aws_security_group.db.id
     subnet_group_id = var.vpc.database_subnet_group_id
+    username   = var.db_config.admin_username
   }
 }
 
+output "ecr_repository_url" {
+  description = "URL del repositorio ECR para realizar el push de la imagen"
+  value       = aws_ecr_repository.ecr_registry.repository_url
+}
 
 /*output "github_actions_role_arn" {
   description = "IAM Role ARN created for GitHub Actions OIDC"

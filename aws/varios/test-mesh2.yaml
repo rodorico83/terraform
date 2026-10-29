@@ -16,6 +16,8 @@ metadata:
   namespace: test-mesh
   annotations:
     argocd.argoproj.io/sync-wave: "-4" # 🎯 Se levanta justo después del namespace
+  labels:
+    gateway.networking.k8s.io/gateway-name: waypoint
 spec:
   gatewayClassName: istio-waypoint
   listeners:
@@ -77,10 +79,18 @@ spec:
         app: frontend-app
     spec:
       nodeSelector:
-        karpenter.sh/capacity-type: "spot"
+        karpenter.sh/nodepool: "low-cost-pool"
+
       containers:
         - name: frontend-server
           image: nginx:alpine
+          resources:
+            requests:
+              cpu: "100m"     # HPA looks at this to calculate the 70% or 80% threshold
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
           ports:
             - containerPort: 80
           volumeMounts:
@@ -91,7 +101,6 @@ spec:
         - name: config-volume
           configMap:
             name: frontend-nginx-config
-
 ---
 # 4. SERVICIO B (BACKEND SERVER con retraso simulado)
 apiVersion: v1
@@ -123,10 +132,18 @@ spec:
         app: backend-app
     spec:
       nodeSelector:
-        karpenter.sh/capacity-type: "spot"
+        karpenter.sh/nodepool: "low-cost-pool"
+
       containers:
         - name: backend
           image: ealen/echo-server:latest
+          resources:
+            requests:
+              cpu: "100m"     # HPA looks at this to calculate the 70% or 80% threshold
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
           ports:
             - containerPort: 80
           env:
@@ -157,3 +174,33 @@ spec:
                 name: servicio-a-frontend
                 port:
                   number: 80
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: proteccion-servicio-b
+  namespace: test-mesh
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3" # Se despliega justo después del Gateway y servicios
+spec:
+  host: servicio-b-backend.test-mesh.svc.cluster.local # 👈 El servicio destino al que aplicamos la política
+  
+  # 1. Política de balanceo de carga entre las réplicas del Servicio B
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_REQUEST # Envoy enviará las nuevas peticiones al pod que menos conexiones activas tenga en ese momento
+      
+    # 2. Control de concurrencia y Circuit Breaking (Pool de Conexiones)
+    connectionPool:
+      tcp:
+        maxConnections: 100 # Límite máximo de conexiones TCP simultáneas permitidas hacia el backend
+      http:
+        http1MaxPendingRequests: 50 # Peticiones máximas que se quedan en cola esperando un hilo libre
+        maxRequestsPerConnection: 10 # Número máximo de peticiones reutilizables por cada conexión persistente
+        
+    # 3. Detección de anomalías y expulsión automática (Outlier Detection / Circuit Breaking dinámico)
+    outlierDetection:
+      consecutive5xxErrors: 3    # Si un pod del Servicio B devuelve 3 errores 5xx consecutivos...
+      interval: 10s              # ...evaluando ventanas de 10 segundos...
+      baseEjectionTime: 30s      # ...lo aísla/expulsa del pool de balanceo durante 30 segundos.
+      maxEjectionPercent: 50     # Máximo porcentaje de réplicas que pueden ser expulsadas a la vez (para no tumbar el 100% del servicio)

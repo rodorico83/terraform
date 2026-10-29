@@ -27,7 +27,7 @@ variable "node_capacity_type" {
 
 variable "db_enabled" {
   type    = bool
-  default = true
+  default = false
 }
 
 variable "github_oidc_enabled" {

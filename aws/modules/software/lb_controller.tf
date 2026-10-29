@@ -27,28 +27,57 @@ resource "helm_release" "aws_lb_controller" {
   version    = "1.8.1"
   namespace  = "kube-system"
 
-  set {
-    name  = "clusterName"
-    value = var.eks.cluster_name
-  }
-  set {
-    name  = "vpcId"
-    value = var.vpc.vpc_id
-  }
-  set {
-    name  = "serviceAccount.create"
-    value = "true"
-  }
-  set {
-    name  = "serviceAccount.name"
-    value = "aws-load-balancer-controller"
-  }
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = module.lb_controller_role.iam_role_arn
-  }
-  set {
-    name  = "nodeSelector.eks\\.amazonaws\\.com/nodegroup"
-    value = "private-workers"
-  }
+  values = [
+    yamlencode({
+      clusterName = var.eks.cluster_name
+      vpcId       = var.vpc.vpc_id
+      replicaCount = 2
+      priorityClassName = "system-cluster-critical"
+      resources = {
+        requests = {
+          cpu    = "50m"
+          memory = "64Mi"
+        }
+        limits = {
+          cpu    = "100m"
+          memory = "128Mi"
+        }
+      }
+      topologySpreadConstraints = [
+        {
+          maxSkew           = 1
+          topologyKey       = "topology.kubernetes.io/zone"
+          whenUnsatisfiable = "DoNotSchedule"
+          labelSelector = { matchLabels = { "app.kubernetes.io/name" = "aws-load-balancer-controller" } }
+        }
+      ]
+      podAntiAffinity = {
+        requiredDuringSchedulingIgnoredDuringExecution = [
+          {
+            labelSelector = {
+              matchExpressions = [
+                {
+                  key      = "app.kubernetes.io/name"
+                  operator = "In"
+                  values = ["aws-load-balancer-controller"]
+                }
+              ]
+            }
+            topologyKey = "kubernetes.io/hostname"
+          }
+        ]
+      }
+      serviceAccount = {
+        create = true
+        name   = "aws-load-balancer-controller"
+        annotations = {
+          "eks.amazonaws.com/role-arn" = module.lb_controller_role.iam_role_arn
+        }
+      }
+      nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
+    })
+  ]
+
+  depends_on = [kubectl_manifest.karpenter_node_pool_infra]
 }
+

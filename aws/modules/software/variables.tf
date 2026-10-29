@@ -68,6 +68,26 @@ variable "enable_wiz" {
   description = "Whether to enable Wiz"
 }
 
+
+variable "enable_kafka" {
+  type        = bool
+  default     = false
+  description = "Whether to enable Kafka"
+}
+
+variable "enable_redis" {
+  type        = bool
+  default     = false
+  description = "Whether to enable Redis"
+}
+
+variable "enable_rabbitmq" {
+  type        = bool
+  default     = false
+  description = "Whether to enable RabbitMQ"
+}
+
+
 variable "enable_pod_eni" {
   type        = bool
   default     = false
@@ -75,10 +95,17 @@ variable "enable_pod_eni" {
 }
 variable "grafana_read_token" {
   type        = string
-  default     = "glsa_eODcSCxIbG0ZDjzX45lLbhHH4qYUuCET_de194222"
+  default     = "glsa_lh0tHOEemgWBBWGuU6tPVL2ib9PrLu4y_4effba2a"
   sensitive = true
   description = "Grafana read token"
 }
+
+variable "strimzi_version" {
+  type        = string
+  default     = "1.1.0"
+  description = "Versión del operador de Strimzi en GitHub"
+}
+
 variable "wiz" {
   type = object({
     enable         = bool
@@ -115,6 +142,9 @@ variable "db" {
     db_port           = number
     sg_group_db_id    = string
     database_subnet_group_id  = string
+    name = string
+    endpoint = string
+    username = string
   })
   description = "VPC configuration"
 }
@@ -137,6 +167,7 @@ variable "eks" {
     cluster_sg = string
     oidc_provider_arn = string
     oidc_provider_url = string
+    oidc_issuer = string
     node_role_arn = string
     pod_app_sg = string
     node_sg = string
@@ -178,8 +209,25 @@ variable "github" {
     github_repository = null
     read_token = null
   }
-  description = "EKS node group scaling configuration"
 }
+
+variable "gitlab" {
+  type = object({
+    enable_gitlab_oidc = bool
+    gitlab_repository = string
+    read_token = string
+    gitlab_project_path = string
+    target_branch = string
+  })
+  default = {
+    enable_gitlab_oidc = false
+    gitlab_repository = null
+    read_token = null
+    gitlab_project_path = "terraform"
+    target_branch = "master"
+  }
+}
+
 
 
 

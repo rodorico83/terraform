@@ -9,14 +9,18 @@ data "aws_iam_policy_document" "eso_trust_policy" {
     principals {
       type        = "Federated"
       identifiers = [  var.eks.oidc_provider_arn ]
-      #identifiers = [  module.eks.oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${var.eks.oidc_issuer}:sub"
+      # Apunta a la ServiceAccount central del operador de ESO
+      values   = ["system:serviceaccount:external-secrets:eso-irsa-sa"]
     }
 
     condition {
       test     = "StringEquals"
-      variable = "${replace(var.eks.oidc_provider_url, "https://", "")}:sub"
-      # Apunta a la ServiceAccount central del operador de ESO
-      values   = ["system:serviceaccount:external-secrets:eso-irsa-sa"]
+      variable = "${var.eks.oidc_issuer}:aud"
+      values   = ["sts.amazonaws.com"]
     }
   }
 }
@@ -59,9 +63,7 @@ resource "aws_iam_role_policy_attachment" "eso_attach" {
 
 # 2.1 creamos namespace
 resource "kubernetes_namespace" "external_secrets" {
-  metadata {
-    name = "external-secrets"
-  }
+  metadata { name = "external-secrets" }
 }
 
 # 2.2 Define name for k8s service account
@@ -69,87 +71,11 @@ resource "kubernetes_service_account" "eso_sa" {
   metadata {
     name      = "eso-irsa-sa"
     namespace = "external-secrets"
-    annotations = {
-      "eks.amazonaws.com/role-arn" = aws_iam_role.eso_platform_role.arn
-    }
+    annotations = { "eks.amazonaws.com/role-arn" = aws_iam_role.eso_platform_role.arn }
   }
 }
 
 
-/*resource "helm_release" "external_secrets" {
-  name             = "external-secrets"
-  repository       = "https://charts.external-secrets.io"
-  chart            = "external-secrets"
-  namespace        = "external-secrets"
-  create_namespace = true
-
-  set {
-    name  = "installCRDs"
-    value = "true"
-  }
-
-  # Inyecta directamente la configuración del ClusterSecretStore en la instalación del chart
-  # Inyecta el ClusterSecretStore mediante extraObjects para despliegue atómico
-  values = [
-    yamlencode({
-      extraObjects = [
-        {
-          apiVersion = "external-secrets.io/v1beta1"
-          kind       = "ClusterSecretStore"
-          metadata = {
-            name = "aws-secretsmanager"
-          }
-          spec = {
-            provider = {
-              aws = {
-                service = "SecretsManager"
-                region  = var.aws_region
-                auth = {
-                  jwt = {
-                    serviceAccountRef = {
-                      name      = kubernetes_service_account.eso_sa.metadata[0].name
-                      namespace = kubernetes_service_account.eso_sa.metadata[0].namespace
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      ]
-    })
-  ]
-  values = [
-    yamlencode({
-      processClusterStores = true
-      clusterSecretStores = [
-        {
-          name = "aws-secretsmanager"
-          spec = {
-            provider = {
-              aws = {
-                service = "SecretsManager"
-                region  = var.aws_region
-                auth = {
-                  jwt = {
-                    serviceAccountRef = {
-                      name      = kubernetes_service_account.eso_sa.metadata[0].name
-                      namespace = kubernetes_service_account.eso_sa.metadata[0].namespace
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      ]
-    })
-  ]
-
-  depends_on = [
-    kubernetes_service_account.eso_sa
-  ]
-}*/
 
 resource "helm_release" "external_secrets" {
   name             = "external-secrets"
@@ -165,127 +91,69 @@ resource "helm_release" "external_secrets" {
   }
   values = [
     yamlencode({
-      nodeSelector = { "eks.amazonaws.com/nodegroup" = "private-workers" }
-      webhook = { nodeSelector = { "eks.amazonaws.com/nodegroup" = "private-workers" } }
-      certController = { nodeSelector = { "eks.amazonaws.com/nodegroup" = "private-workers" } }
-    })
-  ]
-  depends_on = [
-    kubernetes_service_account.eso_sa
-  ]
-}
+      # Controller: AWS Secret sync periodically, Secret creation in K8s,
+      nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
+      replicaCount = 1
+      priorityClassName = "system-cluster-critical"
+      resources = {
+        requests = {
+          cpu    = "50m"
+          memory = "64Mi"
+        }
+        limits = {
+          cpu    = "100m"
+          memory = "128Mi"
+        }
+      }
 
-# 6. ClusterSecretStore desplegado vía Helm para evitar errores de API client en Terraform
-/*resource "helm_release" "cluster_secret_store" {
-  name       = "eso-cluster-secret-store"
-  repository = "https://bedag.github.io/helm-charts/"
-  chart      = "raw"
-  namespace  = "external-secrets"
-
-  values = [
-    yamlencode({
-      resources = [
-        {
-          apiVersion = "external-secrets.io/v1beta1"
-          kind       = "ClusterSecretStore"
-          metadata = {
-            name = "aws-secretsmanager"
+      # Validating and Mutating Admission Webhook for ExternalSecret, SecretStore o ClusterSecretStore
+      webhook = {
+        nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
+        replicaCount = 1
+        priorityClassName = "system-cluster-critical"
+        resources = {
+          requests = {
+            cpu    = "25m"
+            memory = "64Mi"
           }
-          spec = {
-            provider = {
-              aws = {
-                service = "SecretsManager"
-                region  = var.aws_region
-                auth = {
-                  jwt = {
-                    serviceAccountRef = {
-                      name      = kubernetes_service_account.eso_sa.metadata[0].name
-                      namespace = kubernetes_service_account.eso_sa.metadata[0].namespace
-                    }
-                  }
-                }
-              }
-            }
+          limits = {
+            cpu    = "100m"
+            memory = "128Mi"
           }
         }
-      ]
+      }
+      # Generation of certs for K8s API and Webhook pod communication
+      certController = {
+        replicaCount = 1
+        nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
+        priorityClassName = "system-cluster-critical"
+        resources = {
+          requests = {
+            cpu    = "25m"
+            memory = "64Mi"
+          }
+          limits = {
+            cpu    = "100m"
+            memory = "128Mi"
+          }
+        }
+      }
     })
   ]
-
-  depends_on = [
-    helm_release.external_secrets,
-    kubernetes_service_account.eso_sa
-  ]
-}*/
-
-# 6. ClusterSecretStore gestionado mediante kubectl_manifest
-/*resource "null_resource" "apply_cluster_secret_store" {
-  provisioner "local-exec" {
-    command = <<EOT
-kubectl apply -f - <<EOF
-apiVersion: external-secrets.io/v1beta1
-kind: ClusterSecretStore
-metadata:
-  name: aws-secretsmanager
-spec:
-  provider:
-    aws:
-      service: SecretsManager
-      region: ${var.aws_region}
-      auth:
-        jwt:
-          serviceAccountRef:
-            name: ${kubernetes_service_account.eso_sa.metadata[0].name}
-            namespace: ${kubernetes_service_account.eso_sa.metadata[0].namespace}
-EOF
-EOT
-  }
-
-  depends_on = [
-    helm_release.external_secrets,
-    kubernetes_service_account.eso_sa
-  ]
-}*/
-
-resource "kubectl_manifest" "cluster_secret_store" {
-  yaml_body = <<YAML
-apiVersion: external-secrets.io/v1
-kind: ClusterSecretStore
-metadata:
-  name: aws-secretsmanager
-spec:
-  provider:
-    aws:
-      service: SecretsManager
-      region: ${var.aws_region}
-      auth:
-        jwt:
-          serviceAccountRef:
-            name: ${kubernetes_service_account.eso_sa.metadata[0].name}
-            namespace: ${kubernetes_service_account.eso_sa.metadata[0].namespace}
-YAML
-
-  validate_schema   = false
-  force_new         = true
-
-  depends_on = [
-    helm_release.external_secrets,
-    kubernetes_service_account.eso_sa
-  ]
+  depends_on = [kubernetes_service_account.eso_sa,kubectl_manifest.karpenter_node_pool_infra]
 }
 
-/*resource "kubernetes_manifest" "cluster_secret_store" {
-  manifest = {
-    apiVersion = "external-secrets.io/v1beta1"
+# ClusterSecretStore gestionado mediante kubectl_manifest
+resource "kubectl_manifest" "cluster_secret_store" {
+  yaml_body = yamlencode({
+    apiVersion = "external-secrets.io/v1"
     kind       = "ClusterSecretStore"
-    metadata = {
-      name = "aws-secretsmanager"
-    }
+    metadata = { name = "aws-secretsmanager" }
     spec = {
       provider = {
         aws = {
           service = "SecretsManager"
-          region  = var.aws_region # Reemplaza por tu región de AWS
+          region  = var.aws_region
           auth = {
             jwt = {
               serviceAccountRef = {
@@ -297,6 +165,9 @@ YAML
         }
       }
     }
-  }
-  depends_on = [ helm_release.external_secrets, kubernetes_service_account.eso_sa ]
-}*/
+  })
+
+  validate_schema = false
+  force_new       = true
+  depends_on = [helm_release.external_secrets, kubernetes_service_account.eso_sa]
+}

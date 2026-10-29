@@ -13,8 +13,8 @@ resource "aws_iam_role" "ebs_csi_driver" {
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
-          "${local.oidc_issuer_host}:sub" = "system:serviceaccount:kube-system:ebs-csi-controller-sa"
-          "${local.oidc_issuer_host}:aud" = "sts.amazonaws.com"
+          "${local.oidc_issuer}:sub" = "system:serviceaccount:kube-system:ebs-csi-controller-sa"
+          "${local.oidc_issuer}:aud" = "sts.amazonaws.com"
         }
       }
     }]
@@ -30,7 +30,33 @@ resource "aws_iam_role_policy_attachment" "ebs_csi_policy" {
 }
 
 
-# inyecte el controlador nativo de almacenamiento dentro de los nodos del clúster
+
+# Instancias t3.medium / t4g.medium (2 vCPUs, 4 GiB RAM)
+# Rendimiento de Red: Hasta 5 Gbps.
+# IOPS de línea base (Baseline): ~2,000 IOPS
+# Throughput de línea base: ~43.38 MB/s
+# IOPS máximos (Pico): Hasta 11,800 IOPS
+# Throughput máximo (Pico): ~260.6 MB/s
+
+# Instancias t3.large / t4g.large (2 vCPUs, 8 GiB RAM)
+# Rendimiento de Red: Hasta 5 Gbps.
+# IOPS de línea base (Baseline): ~4,000 IOPS
+# Throughput de línea base: ~86.88 MB/s
+# IOPS máximos (Pico): Hasta 15,700 IOPS (en t4g) / ~11,800 IOPS (en t3)
+# Throughput máximo (Pico): ~347.5 MB/s (en t4g) / ~260.6 MB/s (en t3)
+
+# Instancias r6g.medium (1 vCPU, 8 GiB RAM)
+# Rendimiento de Red: Hasta 10 Gbps.
+# Throughput máximo hacia EBS (Pico): ~593.75 MB/s (mucho mayor que los 260 MB/s de una t3).
+# IOPS máximo hacia EBS: Hasta 20,000 IOPS.
+# Rendimiento de línea base (Sostenido): ~78.75 MB/s y ~3,600 IOPS.
+
+# Instancias r6g.large (2 vCPUs, 16 GiB RAM)
+# Rendimiento de Red: Hasta 10 Gbps.
+# Throughput máximo hacia EBS (Pico): ~593.75 MB/s.
+# IOPS máximo hacia EBS: Hasta 20,000 IOPS.
+# Rendimiento de línea base (Sostenido): ~78.75 MB/s y ~3,600 IOPS.
+
 resource "aws_eks_addon" "ebs_csi" {
   cluster_name             = aws_eks_cluster.main.name
   addon_name               = "aws-ebs-csi-driver"
@@ -38,8 +64,6 @@ resource "aws_eks_addon" "ebs_csi" {
   # BUENA PRÁCTICA: Evita que parches automáticos de AWS pisen tus configuraciones
   resolve_conflicts_on_update = "PRESERVE"
   service_account_role_arn = aws_iam_role.ebs_csi_driver.arn
-
-
   tags = local.common_tags
 
   # OBLIGATORIO: El Add-on necesita que los nodos Spot ya existan y estén Ready
@@ -49,19 +73,14 @@ resource "aws_eks_addon" "ebs_csi" {
 # creamos el recurso StorageClass de Kubernetes usando Terraform y lo marcamos como la clase por defecto del sistema
 resource "kubernetes_storage_class_v1" "gp3_default" {
   #provider = kubernetes.aws_eks
-
   metadata {
     name = "gp3"
-    annotations = {
-      # ─── EL TRUCO DE COMPATIBILIDAD UNIVERSAL ───
-      # Le dice a Kubernetes que si cualquier aplicación pide disco sin especificar el nombre,
-      # use esta clase gp3 automáticamente, ahorrando costes frente a gp2.
-      "storageclass.kubernetes.io/is-default-class" = "true"
-    }
+    annotations = { "storageclass.kubernetes.io/is-default-class" = "true" }
   }
 
   # Indicamos que el traductor oficial es el driver que acabamos de instalar
   storage_provisioner    = "ebs.csi.aws.com"
+  # Automatic removal of disk when PVC are deleted
   reclaim_policy         = "Delete"
   volume_binding_mode    = "WaitForFirstConsumer" # Optimiza costes: crea el disco solo cuando el Pod se va a encender
   allow_volume_expansion = true
@@ -74,6 +93,7 @@ resource "kubernetes_storage_class_v1" "gp3_default" {
   # Forzamos a esperar a que el Add-on de AWS esté 100% activo en la red
   depends_on = [aws_eks_addon.ebs_csi]
 }
+
 
 /*
 #### EFS ####
@@ -99,8 +119,15 @@ resource "aws_security_group" "efs" {
 resource "aws_efs_file_system" "main" {
   creation_token = "${var.environment}-eks-efs"
   encrypted      = true
-  performance_mode = "generalPurpose"
-  throughput_mode  = "bursting"
+
+  # generalPurpose: máximo de 35,000 IOPS por sistema de archivos
+  # maxIO: Diseñado específicamente para escalar a miles de clientes o pods conectados
+  performance_mode = "generalPurpose"  # cant be changed after creation
+
+  # bursting: Permite acumular "créditos de ráfaga"
+  # provisoned : provisioned_throughput_in_mibps en Terraform (por ejemplo, 100 para 100 MiB/s).
+  # elastic: El rendimiento escala y disminuye de forma totalmente automática, hasta 3 GiB/s para lectura y 1 GiB/s para escritura por sistema de archivos
+  throughput_mode  = "bursting"  #both provisioned together with provisioned_throughput_in_mibps or elastic
 
   lifecycle_policy {
     transition_to_ia = "AFTER_30_DAYS" # Ahorro FinOps: mueve archivos poco usados a Infrequent Access
@@ -132,8 +159,8 @@ resource "aws_iam_role" "efs_csi_driver" {
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
-          "${local.oidc_issuer_host}:sub" = "system:serviceaccount:kube-system:efs-csi-controller-sa"
-          "${local.oidc_issuer_host}:aud" = "sts.amazonaws.com"
+          "${var.eks.oidc_issuer}:sub" = "system:serviceaccount:kube-system:efs-csi-controller-sa"
+          "${var.eks.oidc_issuer}:aud" = "sts.amazonaws.com"
         }
       }
     }]
@@ -167,9 +194,7 @@ resource "aws_eks_addon" "efs_csi" {
 resource "kubernetes_storage_class_v1" "efs_sc" {
   #provider = kubernetes.aws_eks
 
-  metadata {
-    name = "efs-sc"
-  }
+  metadata {name = "efs-sc"}
 
   storage_provisioner = "efs.csi.aws.com"
   reclaim_policy      = "Delete"
@@ -194,12 +219,8 @@ resource "aws_eks_addon" "s3_csi" {
   cluster_name             = aws_eks_cluster.main.name
   addon_name               = "aws-mountpoint-s3-csi-driver"
   resolve_conflicts_on_update = "PRESERVE"
-
   tags = local.common_tags
-
-  depends_on = [
-    aws_eks_node_group.private_nodes
-  ]
+  depends_on = [aws_eks_node_group.private_nodes]
 }
 
 # For each application
@@ -209,7 +230,6 @@ resource "aws_eks_addon" "s3_csi" {
 resource "aws_s3_bucket" "app_data" {
   bucket        = "${var.environment}-app-shared-data-${var.aws_region}"
   force_destroy = var.environment != "prod"
-
   tags = local.common_tags
 }
 
@@ -244,8 +264,8 @@ resource "aws_iam_role" "app_s3_role" {
       Condition = {
         StringEquals = {
           # Restricción estricta: solo la ServiceAccount 'orders-sa' del namespace 'dev'
-          "${var.oidc_issuer_host}:sub" = "system:serviceaccount:${var.app_namespace}:${var.service_account_name}"
-          "${var.oidc_issuer_host}:aud" = "sts.amazonaws.com"
+          "${var.eks.oidc_issuer}:sub" = "system:serviceaccount:${var.app_namespace}:${var.service_account_name}"
+          "${var.eks.oidc_issuer}:aud" = "sts.amazonaws.com"
         }
       }
     }]

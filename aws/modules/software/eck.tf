@@ -47,7 +47,7 @@ resource "kubectl_manifest" "elasticsearch" {
         }
         podTemplate = {
           spec = {
-            nodeSelector = { "karpenter.sh/capacity-type" = "spot" }
+            nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
             containers = [{
               name = "elasticsearch"
               env = [
@@ -100,7 +100,7 @@ resource "kubectl_manifest" "kibana" {
       }
       podTemplate = {
         spec = {
-          nodeSelector = { "karpenter.sh/capacity-type" = "spot" }
+          nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
         }
       }
     }
@@ -137,7 +137,7 @@ resource "kubernetes_ingress_v1" "kibana_ingress" {
   spec {
     ingress_class_name = "nginx"
     rule {
-      host = "kibana.aws.rj-engineering.com" # <--- REEMPLAZA CON TU DOMINIO REAL
+      host = "kibana.aws.rj-engineering.com"
       http {
         path {
           path      = "/"
@@ -146,9 +146,7 @@ resource "kubernetes_ingress_v1" "kibana_ingress" {
             service {
               # Servicio HTTPS autogenerado por el operador ECK
               name = "kibana-kb-http"
-              port {
-                number = 5601
-              }
+              port { number = 5601 }
             }
           }
         }
@@ -255,7 +253,7 @@ resource "kubectl_manifest" "logstash" {
       # El operador ECK mapea de forma segura las variables de entorno de esta manera
       podTemplate = {
         spec = {
-          nodeSelector = { "karpenter.sh/capacity-type" = "spot" }
+          nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
           tolerations = [
             { key = "nas-system-nodes", operator = "Exists", effect = "NoSchedule" }
           ]

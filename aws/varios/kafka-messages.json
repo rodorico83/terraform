@@ -1,0 +1,45 @@
+{
+  # Estándar CloudEvents (CNCF)
+  {
+    "specversion": "1.0",
+    "type": "com.tienda.pedidos.orden-creada",
+    "source": "/servicios/ordenes",
+    "subject": "ord_8829102",
+    "id": "evt_9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+    "time": "2026-10-03T14:30:00Z",
+    "datacontenttype": "application/json",
+    "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    "data": {
+      "order_id": "ord_8829102",
+      "customer_id": "usr_77301",
+      "total_amount": 149.99,
+      "currency": "EUR",
+      "items": [
+        {
+          "sku": "PROD-001",
+          "quantity": 2,
+          "price": 74.99
+        }
+      ]
+    }
+  }
+
+  {
+    "metadata": {
+      "event_id": "evt_1234567890",
+      "event_type": "PaymentCompleted",
+      "version": "v1",
+      "timestamp": 1727965800,
+      "producer": "payment-service",
+      "correlation_id": "req_abc123xyz",
+      "tenant_id": "tenant_spain"
+    },
+    "payload": {
+      "payment_id": "pay_998811",
+      "order_id": "ord_8829102",
+      "status": "SUCCESS",
+      "payment_method": "CREDIT_CARD",
+      "amount": 149.99
+    }
+  }
+}

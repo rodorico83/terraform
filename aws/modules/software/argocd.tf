@@ -7,14 +7,12 @@ resource "aws_iam_role" "argocd_deployer" {
     Statement = [
       {
         Effect = "Allow"
-        Principal = {
-          Federated = var.eks.oidc_provider_arn
-        }
+        Principal = { Federated = var.eks.oidc_provider_arn }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
-            "${replace(var.eks.oidc_provider_url, "https://", "")}:sub" = "system:serviceaccount:argocd:argocd-application-controller"
-            "${replace(var.eks.oidc_provider_url, "https://", "")}:aud" = "sts.amazonaws.com"
+            "${var.eks.oidc_issuer}:sub" = "system:serviceaccount:argocd:argocd-application-controller"
+            "${var.eks.oidc_issuer}:aud" = "sts.amazonaws.com"
           }
         }
       }
@@ -44,9 +42,7 @@ resource "aws_eks_access_policy_association" "argocd_deployer_policy" {
 # 3.1.  Define CLuster Role for ArgoCD
 resource "kubernetes_cluster_role_v1" "argocd_business_operator" {
   #provider = kubernetes.aws_eks
-  metadata {
-    name = "${var.environment}-argocd-business-operator"
-  }
+  metadata { name = "${var.environment}-argocd-business-operator" }
 
   # Lectura global para detectar drift (Wiz no alerta por permisos de lectura)
   rule {
@@ -137,7 +133,8 @@ resource "kubernetes_secret" "argocd_cluster_aws" {
 
   data = {
     name   = "${var.environment}-aws-cluster"
-    server = "https://kubernetes.default.svc" #var.eks.cluster_endpoint to enable auth via accessKey kubernetes group mappingg
+    #server = var.eks.cluster_endpoint #via accessKey kubernetes group mappingg
+    server = "https://kubernetes.default.svc" #via K8s serviceaccount
     config = jsonencode({
       # ------------------------------------------------------------------------
       # ZERO-TRUST IAM AUTHENTICATION (Replaces permanent bearerToken)
@@ -169,13 +166,7 @@ resource "helm_release" "argocd" {
   values = [
     yamlencode({
 
-      # ------------------------------------------------------------------------
-      # ASIGNACIÓN GLOBAL A LOS NODOS DE INFRAESTRUCTURA (Managed Node Group)
-      # ------------------------------------------------------------------------
-      #"karpenter.sh/capacity-type" = "spot"  O on-demand For Karpenter Scaling
-      #global = { nodeSelector = { "eks.amazonaws.com/nodegroup" = "private-workers" } }
-      global = { nodeSelector = { "karpenter.sh/capacity-type" = "spot" } }
-
+      global = { nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" } }
 
       # 1. CONTROLADOR PRINCIPAL (Elección de Líder automática)
       controller = {
@@ -183,25 +174,32 @@ resource "helm_release" "argocd" {
         clusterAdminAccessEnabled = false # Not create the full permissions Rol binding
         serviceAccount = {
           create = true
-          annotations = {
-            "eks.amazonaws.com/role-arn" = aws_iam_role.argocd_deployer.arn
-          }
+          annotations = { "eks.amazonaws.com/role-arn" = aws_iam_role.argocd_deployer.arn }
         }
         metrics = {
           enabled = true
           serviceMonitor = {
             enabled = true
             # Asegura que Prometheus busque el ServiceMonitor sin restricciones de Namespace
-            additionalLabels = {
-              release = "kube-prometheus-stack"
-            }
+            additionalLabels = { release = "kube-prometheus-stack" }
           }
         }
         # Límites estrictos para que no consuma de más en tus instancias Spot
         resources = {
-          requests = { cpu = "100m", memory = "256Mi" }
+          requests = { cpu = "100m", memory = "400Mi" }
           limits   = { cpu = "500m", memory = "512Mi" }
         }
+        /* # Required in when using cluster endpoint instead of FQDN
+        env = [
+          {
+            name  = "AWS_STS_REGIONAL_ENDPOINTS"
+            value = "regional"
+          },
+          {
+            name  = "AWS_REGION"
+            value = "eu-south-2"
+          }
+        ]*/
       }
 
       # 2. EL SERVIDOR DE REPOSITORIOS (Stateless - Conexión a tu GitHub privado)
@@ -214,9 +212,7 @@ resource "helm_release" "argocd" {
           enabled = true
           serviceMonitor = {
             enabled = true
-            additionalLabels = {
-              release = "kube-prometheus-stack"
-            }
+            additionalLabels = { release = "kube-prometheus-stack" }
           }
         }
         resources = {
@@ -227,13 +223,22 @@ resource "helm_release" "argocd" {
 
       # 3. APPLICATIONSET CONTROLLER
       applicationset = {
+        priorityClassName = "system-cluster-critical"
+        resources = {
+          requests = {
+            cpu    = "25m"
+            memory = "64Mi"
+          }
+          limits = {
+            cpu    = "100m"
+            memory = "128Mi"
+          }
+        }
         metrics = {
           enabled = true
           serviceMonitor = {
             enabled = true
-            additionalLabels = {
-              release = "kube-prometheus-stack"
-            }
+            additionalLabels = { release = "kube-prometheus-stack" }
           }
         }
       }
@@ -282,10 +287,9 @@ resource "helm_release" "argocd" {
           }
         ]
 
-        autoscaling = {
-          enabled = false # ──► DESACTIVAMOS EL HPA PARA EVITAR ESCALADOS IMPREVISTOS
-        }
+        autoscaling = { enabled = false }
         replicas = 1 # 2 Pods atendiendo peticiones web en paralelo
+        priorityClassName = "system-cluster-critical"
 
         # ACTIVACIÓN DEL INGRESS DENTRO DEL HELM CHART
         ingress = {
@@ -311,8 +315,8 @@ resource "helm_release" "argocd" {
 
         }
         resources = {
-          requests = { cpu = "500m", memory = "512Mi" }
-          limits   = { cpu = "1000m", memory = "1024Mi" }
+          requests = { cpu = "100m", memory = "64Mi" }
+          limits   = { cpu = "250m", memory = "256Mi" }
         }
       }
 
@@ -320,58 +324,58 @@ resource "helm_release" "argocd" {
       # Activa automáticamente 3 réplicas coordinadas de Redis (1 maestro + 2 copias de respaldo)
       redis-ha = {
         enabled = false
+        resources = {
+          requests = { cpu = "50m", memory = "64Mi" }
+          limits   = { cpu = "200m", memory = "128Mi" }
+        }
       }
 
-      /*extraObjects = [
-        # Define the Applicacion Matrix that will automatically discover all bussiness apps
-        # To avoid error of CRD´s we create matrix in separate k8s manifest
-        {
-          apiVersion = "argoproj.io/v1alpha1"
-          kind       = "Application"
-          metadata = {
-            name      = "root-bootstrap"
-            namespace = "argocd"
-          }
-          spec = {
-            ...
-          }
+      notifications = {
+        enabled = true
+        replicas = 1
+        resources = {
+          requests = { cpu = "50m", memory = "64Mi" }
+          limits   = { cpu = "100m", memory = "128Mi" }
         }
-      ]*/
+      }
 
     })
   ]
-
+  depends_on = [helm_release.kube_prometheus_stack,helm_release.cert_manager, kubectl_manifest.karpenter_node_pool_infra]
 }
 
 # 6. Desplegamos el Root App de forma asíncrona y segura al final
 resource "kubectl_manifest" "argocd_root_bootstrap" {
-  yaml_body = <<YAML
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: root-bootstrap
-  namespace: argocd
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/rodorico83/gitops-manifests
-    targetRevision: master
-    path: bootstrap
-  destination:
-    server: https://kubernetes.default.svc # var.eks.cluster_endpoint
-    namespace: argocd
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-YAML
+  yaml_body = yamlencode({
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata = {
+      name      = "root-bootstrap"
+      namespace = "argocd"
+    }
+    spec = {
+      project = "default"
+      source = {
+        repoURL        = "https://github.com/rodorico83/gitops-manifests"
+        targetRevision = "master"
+        path           = "bootstrap"
+      }
+      destination = {
+        server    = "https://kubernetes.default.svc" # O puedes usar var.eks.cluster_endpoint
+        namespace = "argocd"
+      }
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+      }
+    }
+  })
 
   validate_schema = false # No rompe el plan si el CRD no se ha creado aún
   force_new       = true
-
-  depends_on = [
-    helm_release.argocd
-  ]
+  depends_on      = [helm_release.argocd]
 }
 
 
@@ -381,11 +385,8 @@ resource "kubernetes_secret" "argocd_repo_gitops_manifests" {
   metadata {
     name      = "repo-gitops-manifests"
     namespace = "argocd"
-
     # 🎯 ETIQUETA OBLIGATORIA: Indica a Argo CD que esto es un repositorio registrado
-    labels = {
-      "argocd.argoproj.io/secret-type" = "repository"
-    }
+    labels = { "argocd.argoproj.io/secret-type" = "repository" }
   }
 
   data = {
@@ -394,7 +395,6 @@ resource "kubernetes_secret" "argocd_repo_gitops_manifests" {
     username = "rodorico83"
     password = var.github.read_token # Personal Access Token (PAT) con permisos de lectura (repo scope)
   }
-
   depends_on = [helm_release.argocd]
 }
 
@@ -403,10 +403,7 @@ resource "kubernetes_secret" "argocd_repo_gitops_manifests" {
 resource "kubernetes_namespace" "argo_rollouts" {
   metadata {
     name = "argo-rollouts"
-
-    labels = {
-      "app.kubernetes.io/managed-by" = "terraform"
-    }
+    labels = { "app.kubernetes.io/managed-by" = "terraform" }
   }
 }
 
@@ -422,24 +419,33 @@ resource "helm_release" "argo_rollouts" {
 
   values = [
     yamlencode({
-      dashboard = {
-        enabled = true
-      }
+      dashboard = { enabled = false }
       controller = {
         replicas = 1
+        priorityClassName = "system-cluster-critical"
+        resources = {
+          requests = {
+            cpu    = "25m"
+            memory = "64Mi"
+          }
+          limits = {
+            cpu    = "100m"
+            memory = "128Mi"
+          }
+        }
         metrics = {
           enabled = true
+          serviceMonitor = {
+            enabled = true
+            additionalLabels = { release = "kube-prometheus-stack" }
+          }
         }
       }
-      argocdServer = {
-        enabled = true
-      }
+      argocdServer = { enabled = true }
     })
   ]
   # Asegura que el namespace existe antes de instalar
-  depends_on = [
-    kubernetes_namespace.argo_rollouts
-  ]
+  depends_on = [kubernetes_namespace.argo_rollouts]
 }
 
 /*
