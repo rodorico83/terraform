@@ -46,7 +46,6 @@ resource "helm_release" "istio_cni" {
       cni = { ambient = { dnsCapture = false } }
     })
   ]
-
   depends_on = [helm_release.istio_base]
 }
 
@@ -111,12 +110,12 @@ resource "helm_release" "istiod" {
           }
         }
         env = {
-          PILOT_ENABLE_AMBIENT = "true"
+          PILOT_ENABLE_AMBIENT = "true"  # Activa las capacidades de Ambient Mesh en Pilot
           # EKS tokens has  aud: "sts.amazonaws.com" In order the identity check (token verification) to work this is needed
           TOKEN_AUDIENCE = "sts.amazonaws.com"
           #PILOT_ENABLE_XDS_IDENTITY_CHECK = "false" # Evita el rechazo de tokens xDS no estrictos en entornos EKS/AWS
           #PILOT_ENABLE_INSECURE_IMPERSONATION = "true"
-        } # Activa las capacidades de Ambient Mesh en Pilot
+        }
       }
     })
   ]
@@ -128,28 +127,29 @@ resource "helm_release" "istiod" {
 resource "kubectl_manifest" "istiod_service_monitor" {
   count = var.enable_istio ? 1 : 0
 
-  yaml_body = <<-YAML
-    apiVersion: monitoring.coreos.com/v1
-    kind: ServiceMonitor
-    metadata:
-      name: istiod
-      namespace: istio-system
-      labels:
-        release: kube-prometheus-stack
-    spec:
-      selector:
-        matchLabels:
-          app: istiod
-      namespaceSelector:
-        matchNames:
-          - istio-system
-      endpoints:
-        - port: http-monitoring
-          interval: 15s
-        - port: dns-monitoring
-          interval: 15s
-  YAML
-
+  yaml_body = yamlencode({
+    apiVersion = "monitoring.coreos.com/v1"
+    kind       = "ServiceMonitor"
+    metadata = {
+      name      = "istiod"
+      namespace = "istio-system"
+      labels = { release = "kube-prometheus-stack" }
+    }
+    spec = {
+      selector = { matchLabels = { app = "istiod" } }
+      namespaceSelector = { matchNames = ["istio-system"] }
+      endpoints = [
+        {
+          port     = "http-monitoring"
+          interval = "15s"
+        },
+        {
+          port     = "dns-monitoring"
+          interval = "15s"
+        }
+      ]
+    }
+  })
   depends_on = [helm_release.istiod]
 }
 
@@ -184,52 +184,52 @@ resource "helm_release" "ztunnel" {
 resource "kubectl_manifest" "ztunnel_pod_monitor" {
   count = var.enable_istio ? 1 : 0
 
-  yaml_body = <<-YAML
-    apiVersion: monitoring.coreos.com/v1
-    kind: PodMonitor
-    metadata:
-      name: ztunnel
-      namespace: istio-system
-      labels:
-        release: kube-prometheus-stack
-    spec:
-      selector:
-        matchLabels:
-          app: ztunnel
-      namespaceSelector:
-        matchNames:
-          - istio-system
-      podMetricsEndpoints:
-        - port: application-metrics
-          interval: 15s
-          path: /stats/prometheus
-  YAML
-
+  yaml_body = yamlencode({
+    apiVersion = "monitoring.coreos.com/v1"
+    kind       = "PodMonitor"
+    metadata = {
+      name      = "ztunnel"
+      namespace = "istio-system"
+      labels = { release = "kube-prometheus-stack" }
+    }
+    spec = {
+      selector = { matchLabels = { app = "ztunnel" } }
+      namespaceSelector = { matchNames = ["istio-system"] }
+      podMetricsEndpoints = [
+        {
+          port     = "application-metrics"
+          interval = "15s"
+          path     = "/stats/prometheus"
+        }
+      ]
+    }
+  })
   depends_on = [helm_release.ztunnel]
 }
 
 resource "kubectl_manifest" "waypoint_pod_monitor" {
   count = var.enable_istio ? 1 : 0
 
-  yaml_body = <<-YAML
-    apiVersion: monitoring.coreos.com/v1
-    kind: PodMonitor
-    metadata:
-      name: istio-waypoint
-      namespace: istio-system
-      labels:
-        release: kube-prometheus-stack
-    spec:
-      selector:
-        matchLabels:
-          gateway.networking.k8s.io/gateway-name: waypoint
-      namespaceSelector:
-        any: true # 🎯 Escanea cualquier namespace donde despliegues un Waypoint
-      podMetricsEndpoints:
-        - port: http-envoy-prom
-          interval: 15s
-          path: /stats/prometheus
-  YAML
+  yaml_body = yamlencode({
+    apiVersion = "monitoring.coreos.com/v1"
+    kind       = "PodMonitor"
+    metadata = {
+      name      = "istio-waypoint"
+      namespace = "istio-system"
+      labels = { release = "kube-prometheus-stack" }
+    }
+    spec = {
+      selector = { matchLabels = { "gateway.networking.k8s.io/gateway-name" = "waypoint" } }
+      namespaceSelector = { any = true }
+      podMetricsEndpoints = [
+        {
+          port     = "http-envoy-prom"
+          interval = "15s"
+          path     = "/stats/prometheus"
+        }
+      ]
+    }
+  })
 
   depends_on = [helm_release.istiod]
 }
@@ -294,12 +294,10 @@ resource "kubernetes_ingress_v1" "kiali_ingress" {
 
   spec {
     ingress_class_name = "nginx" # Apunta a tu recurso helm_release.nginx_ingress
-
     tls {
       hosts       = ["kiali.aws.rj-engineering.com"]
       secret_name = "kiali-server-tls-secret"
     }
-
     rule {
       host = "kiali.aws.rj-engineering.com"
       http {

@@ -134,7 +134,7 @@ resource "helm_release" "loki" {
     jsonencode({
       deploymentMode = "SimpleScalable" #"SingleBinary"
 
-      # 1. DESACTIVAR LOS TESTS DE HELM PARA EVITAR EL ERROR DE VALIDACIÓN
+      # Deactivate Helm tests
       test = { enabled = false }
       # Permiter evaluar la latencia o perdidas de logs generando logs y consultando loki para evaluar tiempos o perdidas
       lokiCanary = { enabled = false }
@@ -492,7 +492,7 @@ resource "kubectl_manifest" "otel_instrumentation" {
       namespace = "monitoring"
     }
     spec = {
-      # Apunta al colector daemonset existente en tu clúster
+      # Apunta al colector daemonset existente en tu clúster (como daemonsSet se dirigen a la repica del mismo nodo)
       exporter = { endpoint = "http://opentelemetry-collector.monitoring.svc:4318" }
       propagators = [
         "tracecontext", # W3C Trace Context (standard: traceparent) para pasar el trace_id y span_id

@@ -66,7 +66,7 @@ resource "helm_release" "redis" {
       #   Ramdom: allkeys-random, volatile-random,
       #   TTL based: volatile-ttl
       #   noeviction (Rejects all writes)
-      # appendonly: Redis registra cada operación de escritura (SET, DEL, etc.) en un fichero, garatiza durabilidad si pod muere
+      # appendonly: Redis registra cada operación de escritura (SET, DEL, etc.) en un fichero, garantiza durabilidad si pod muere
       # appendfsync everysec: sync registro con file every sec
       commonConfiguration: <<-EOT
         maxmemory 900mb
@@ -117,6 +117,7 @@ resource "helm_release" "redis" {
         }
         podAntiAffinityPreset = "hard"
       }
+
       # Redis Sentinel para Failover Automático
       sentinel = {
         enabled      = true

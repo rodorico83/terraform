@@ -100,10 +100,7 @@ resource "helm_release" "tempo" {
         storageClass = "gp3"
         size         = "10Gi"
       }
-
       nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
-
-
     })
   ]
   depends_on = [aws_iam_role.tempo_s3,helm_release.kube_prometheus_stack,kubectl_manifest.karpenter_node_pool_infra]

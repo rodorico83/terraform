@@ -32,6 +32,26 @@ aws secretsmanager delete-secret   --secret-id dev/grafana/admin-password   --fo
 # For ArgoCD Appproject creation
 export APP_NAME="rabbitmq-tester" && envsubst < template.yaml | kubectl apply -f -
 
+#################
+## PATCH/EDIT ###
+#################
+# For quick fix production env
+kubectl edit statefulset rabbitmq
+kubectl patch statefulset rabbitmq --type='json' -p='[
+  {
+    "op": "replace",
+    "path": "/spec/template/spec/containers/0/resources/limits/memory",
+    "value": "4Gi"
+  },
+  {
+    "op": "replace",
+    "path": "/spec/template/spec/containers/0/resources/requests/memory",
+    "value": "2Gi"
+  }
+]'
+
+
+
 #####################
 ### PORT FORWARD ####
 #####################

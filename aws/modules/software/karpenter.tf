@@ -1,7 +1,4 @@
 # 1. Definimos la política con los permisos faltantes para Karpenter v1
-# ==============================================================================
-# 1. POLÍTICA IAM COMPLETA PARA EL CONTROLADOR DE KARPENTER v1.x (CORREGIDA)
-# ==============================================================================
 resource "aws_iam_policy" "karpenter_iam_policy" {
   name        = "karpenter-iam-policies"
   description = "Permisos completos de ciclo de vida EC2 e IAM requeridos por Karpenter v1"
@@ -34,9 +31,7 @@ resource "aws_iam_policy" "karpenter_iam_policy" {
       # B) Permisos para inyectar etiquetas a las nuevas instancias creadas
       {
         Effect   = "Allow"
-        Action   = [
-          "ec2:CreateTags"
-        ]
+        Action   = ["ec2:CreateTags"]
         Resource = "arn:aws:ec2:*:*:instance/*"
       },
       # C) Gestión de Instance Profiles para pasarle el rol a los nodos elásticos
@@ -61,9 +56,7 @@ resource "aws_iam_policy" "karpenter_iam_policy" {
       # E) Consulta del catálogo de AMIs optimizadas de Amazon (SSM)
       {
         Effect   = "Allow"
-        Action   = [
-          "ssm:GetParameter"
-        ]
+        Action   = ["ssm:GetParameter"]
         Resource = "arn:aws:ssm:*:*:parameter/aws/service/ami-amazon-linux-latest/*"
       }
     ]
@@ -200,9 +193,7 @@ resource "kubectl_manifest" "karpenter_node_class" {
     metadata = { name = "default-v3" }
     spec = {
       # 🔍 Busca automáticamente tus subnets y Security Groups usando el nombre del clúster
-      subnetSelectorTerms = [
-        { tags = { "karpenter.sh/discovery" = var.eks.cluster_name } }
-      ]
+      subnetSelectorTerms = [ { tags = { "karpenter.sh/discovery" = var.eks.cluster_name }} ]
 
       # SG Selection via tag or via Id
       /*securityGroupSelectorTerms = [
@@ -288,7 +279,7 @@ resource "kubectl_manifest" "karpenter_node_pool" {
             {
               key      = "topology.kubernetes.io/zone"
               operator = "In"
-              values   = ["eu-south-2a", "eu-south-2b", "eu-south-2c"]
+              values   = ["eu-south-2a", "eu-south-2b"]
             },
             # Si var.environment es "prod", usa "on-demand". Si es "dev"/"stage", usa "spot" (70% ahorro).
             {

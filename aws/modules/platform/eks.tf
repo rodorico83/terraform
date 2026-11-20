@@ -258,16 +258,12 @@ resource "kubernetes_manifest" "admission_policy_binding" {
   manifest = {
     apiVersion = "admissionregistration.k8s.io/v1"
     kind       = "ValidatingAdmissionPolicyBinding"
-    metadata = {
-      name = "block-system-namespace-mutation-binding"
-    }
+    metadata = { name = "block-system-namespace-mutation-binding" }
     spec = {
       policyName        = kubernetes_manifest.enforce_gitops_workloads.manifest.metadata.name
       # En producción: empieza con ["Warn", "Audit"] y cuando verifiques que ArgoCD opera sin fallos, pasa a ["Deny"]
       validationActions = ["Deny"]
-      matchResources = {
-        namespaceSelector = {}
-      }
+      matchResources = { namespaceSelector = {} }
     }
   }
 }

@@ -13,7 +13,7 @@ resource "kubernetes_namespace" "kafka" {
 #   Ejecutar los reinicios progresivos (rolling updates) de los brokers
 # kafka-cluster-entity-operator:
 #   Topic Operator Container: Reconcilia los recursos KafkaTopic
-#   User Operator Container: Reconcilia los recursos  KafkaUser .
+#   User Operator Container:  Reconcilia los recursos  KafkaUser .
 #                             Gestiona la autenticación (certificados mTLS, SCRAM-SHA-512) y las ACLs
 resource "helm_release" "strimzi_operator" {
   count      = var.enable_kafka ? 1 : 0
@@ -30,17 +30,9 @@ resource "helm_release" "strimzi_operator" {
       installCRDs       = true
 
       resources = {
-        requests = {
-          cpu    = "500m"
-          memory = "350Mi"
-        }
-        limits = {
-          cpu    = "800m"
-          memory = "600Mi"
-        }
+        requests = { cpu = "500m", memory = "350Mi" }
+        limits = { cpu = "800m", memory = "600Mi" }
       }
-
-      # Uso de yamlencode para evitar errores de escape de puntos
       nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
     })
   ]
@@ -53,8 +45,9 @@ resource "helm_release" "strimzi_operator" {
 # Broker:
 #   Recibe los mensajes de los productores, los escribe de forma secuencial en el volumen EBS ( gp3 ), gestiona la replicación entre nodos y entrega los datos a los consumidores.
 # Controller:
+#   Gestión de Metadatos y Consenso (Protocolo KRaft), El clúster almacena sus propios metadatos ( topics, partitions, liders
 #   Forma parte del quórum de metadatos (el sustituto de ZooKeeper).
-#   Se encarga de coordinar la topología del clúster, elegir los líderes de las particiones y gestionar las asignaciones.
+#   Se encarga de coordinar la topología del clúster, elegir los líderes de las particiones y gestionar las asignaciones,
 resource "kubectl_manifest" "kafka_node_pool" {
   count      = var.enable_kafka ? 1 : 0
   yaml_body = yamlencode({
@@ -113,14 +106,8 @@ resource "kubectl_manifest" "kafka_node_pool" {
       }
 
       resources = {
-        requests = {
-          memory = "1.5Gi"
-          cpu    = "250m"
-        }
-        limits = {
-          memory = "2.5Gi"
-          cpu    = "600m"
-        }
+        requests = { memory = "1.5Gi", cpu = "250m" }
+        limits = { memory = "2.5Gi", cpu = "600m" }
       }
     }
   })
@@ -158,14 +145,14 @@ resource "kubectl_manifest" "kafka_cluster" {
           }
         ]
         config = {
-          "offsets.topic.replication.factor"        = 2
+          "offsets.topic.replication.factor"         = 2
           "transaction.state.log.replication.factor" = 2
           "transaction.state.log.min.isr"            = 1
-          "default.replication.factor"              = 2
-          "min.insync.replicas"                     = 1
-          "auto.create.topics.enable"               = false
-          "log.retention.bytes"                     = 107374182400 # 100 GB
-          "log.segment.bytes"                       = 1073741824   # 1 GB
+          "default.replication.factor"               = 2
+          "min.insync.replicas"                      = 1
+          "auto.create.topics.enable"                = false
+          "log.retention.bytes"                      = 107374182400 # 100 GB
+          "log.segment.bytes"                        = 1073741824   # 1 GB
         }
         metricsConfig = {
           type = "jmxPrometheusExporter"
@@ -177,7 +164,10 @@ resource "kubectl_manifest" "kafka_cluster" {
           }
         }
       }
-
+      # Tasks:
+      # Automatic Partition load rebalancing (rebalance parititions based on brokers load)
+      # Anomaly Detection of brokers and partition rebalance
+      # Broker Add/Decommission
       cruiseControl = {
         resources = {
           requests = {
@@ -300,9 +290,7 @@ resource "kubectl_manifest" "kafka_pod_monitor" {
       labels = { release = "kube-prometheus-stack" }
     }
     spec = {
-      selector = {
-        matchLabels = { "strimzi.io/kind" = "Kafka" }
-      }
+      selector = { matchLabels = { "strimzi.io/kind" = "Kafka" } }
       podMetricsEndpoints = [
         {
           port     = "tcp-prometheus"

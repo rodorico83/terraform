@@ -107,3 +107,15 @@ variable "app_container_port" {
   description = "Container port the application pods listen on. ingress-nginx routes to the pod IP on this port, not to the Service port."
 }
 
+variable "enableDynamoDB" {
+  type    = bool
+  default = false
+}
+
+variable "enable_mongodb_community" {
+  description = "Habilita el despliegue de MongoDB Community Edition mediante su Operador K8s"
+  type        = bool
+  default     = false
+}
+
+

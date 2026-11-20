@@ -46,6 +46,32 @@ resource "helm_release" "nginx_ingress" {
           }
         }
 
+        readinessProbe = {
+          httpGet = {
+            path   = "/healthz"
+            port   = 10254
+            scheme = "HTTP"
+          }
+          initialDelaySeconds = 10
+          periodSeconds       = 10
+          timeoutSeconds      = 1
+          successThreshold    = 1
+          failureThreshold    = 3
+        }
+
+        livenessProbe = {
+          httpGet = {
+            path   = "/healthz"
+            port   = 10254
+            scheme = "HTTP"
+          }
+          initialDelaySeconds = 10
+          periodSeconds       = 10
+          timeoutSeconds      = 1
+          successThreshold    = 1
+          failureThreshold    = 3
+        }
+
         nodeSelector = { "karpenter.sh/nodepool" = "low-cost-pool-infra" }
         affinity = {
           podAntiAffinity = {
@@ -75,7 +101,7 @@ resource "helm_release" "nginx_ingress" {
             # Use external AWS load balancer
             "service.beta.kubernetes.io/aws-load-balancer-type"             = "external"
             # NLB envía el tráfico al puerto de nodo (NodePort) instead of Pod port (VPC CNI pod ENI)
-            "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type"  = "instance"
+            "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type"  = "instance"  # "ip" in case of using pod ENI
             # Place NLB in public subnet with public IP, other option internal for private subnet
             "service.beta.kubernetes.io/aws-load-balancer-scheme"           = "internet-facing"
             #"controller.service.externalTrafficPolicy" =  "Local"
